@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rustworks</title>
+<style>
+  :root{--glass:rgba(22,19,17,.72);--line:rgba(255,235,210,.09);--ink:#efe3cc;--dim:#a89a84;--acc:#f0a945}
+  html,body{margin:0;height:100%;overflow:hidden;background:#141210;color:var(--ink);
+    font:12px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;user-select:none}
+  canvas{display:block}
+  .glass{position:absolute;background:var(--glass);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.35)}
+  .dim{color:var(--dim)} .good{color:#8fe07a} .warn{color:#ffb84a} .bad{color:#ff7a5c}
+  kbd{display:inline-block;min-width:12px;padding:0 4px;text-align:center;font:600 10px ui-monospace,monospace;color:#efe3cc;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);border-radius:3px}
+  code{font:11px ui-monospace,monospace;background:rgba(255,255,255,.08);padding:1px 4px;border-radius:3px}
+  button{font:inherit;color:var(--ink);background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);border-radius:5px;padding:4px 9px;cursor:pointer;margin-top:6px}
+  button:hover:not(:disabled){background:rgba(240,169,69,.22);border-color:rgba(240,169,69,.5)}
+  button:disabled{opacity:.4;cursor:default}
+  /* HUD */
+  #hud{left:10px;top:10px;padding:6px 10px;display:flex;gap:14px;align-items:center}
+  #hud .l{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  #hud .v{font:600 13px ui-monospace,Menlo,monospace}
+  #hPowWrap{width:110px} .pb{height:3px;background:rgba(255,255,255,.1);border-radius:2px;margin-top:2px;overflow:hidden} .pb i{display:block;height:100%;width:0;transition:width .3s}
+  #hudMore{cursor:pointer;color:var(--dim);font-size:14px;padding:0 2px} #hudMore:hover{color:var(--acc)}
+  #stats{left:10px;top:56px;padding:8px 12px;width:250px;display:none} #stats.on{display:block}
+  #stats .row,#inspect .row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+  #obj{left:10px;top:56px;padding:4px 10px;max-width:420px;display:flex;gap:8px;align-items:center}
+  #stats.on ~ #obj{display:none}
+  #objQ{cursor:pointer;color:var(--acc);font-weight:700;border:1px solid rgba(240,169,69,.4);border-radius:50%;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;flex:none}
+  /* top-right */
+  #tr{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;align-items:flex-end;gap:5px;pointer-events:none}
+  #players{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+  .chip{background:var(--glass);border:1px solid var(--line);border-radius:12px;padding:2px 9px 2px 5px;display:inline-flex;align-items:center;gap:5px}
+  .chip i{width:10px;height:10px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.5)}
+  #alerts{display:flex;flex-direction:column;gap:3px;align-items:flex-end}
+  .al{background:var(--glass);border-radius:6px;padding:2px 8px;font-size:11px;border-left:3px solid #f2b431}
+  .al.r{border-left-color:#e2483a;color:#ffd7cc} .al.p{border-left-color:#c86ad8;color:#f0d0f0}
+  /* feed + chat */
+  #feed{position:absolute;left:10px;bottom:120px;width:420px;display:flex;flex-direction:column;gap:3px;pointer-events:none}
+  .fl{background:rgba(18,15,13,.6);padding:3px 9px;border-radius:5px;transition:opacity .6s;width:fit-content;max-width:100%}
+  .fl.bad{border-left:3px solid #e2483a} .fl.good{border-left:3px solid #62c25a} .fl.warn{border-left:3px solid #f2b431} .fl.sys{color:#d8ccb5}
+  #chatWrap{position:absolute;left:10px;bottom:92px;display:none} #chatWrap.on{display:block}
+  #chatIn{width:400px;background:rgba(18,15,13,.85);border:1px solid rgba(240,169,69,.5);border-radius:5px;color:var(--ink);padding:5px 9px;font:inherit;outline:none}
+  /* build bar */
+  #bb{left:50%;bottom:10px;transform:translateX(-50%);padding:5px 7px 6px;max-width:calc(100vw - 230px)}
+  #tabs{display:flex;gap:2px;margin-bottom:4px;flex-wrap:wrap;align-items:center}
+  .tab{padding:1px 8px;border-radius:4px;cursor:pointer;color:var(--dim);font-size:11px} .tab:hover{color:var(--ink)} .tab.on{background:rgba(240,169,69,.2);color:var(--acc)}
+  .tabhint{margin-left:auto;opacity:.6}
+  #slots{display:flex;gap:3px}
+  .slot{width:40px;height:40px;border-radius:6px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);position:relative;cursor:pointer}
+  .slot:hover{background:rgba(255,255,255,.08)} .slot.sel{background:rgba(240,169,69,.25);border-color:var(--acc)}
+  .slot canvas{width:36px;height:36px;position:absolute;left:2px;top:2px}
+  .slot .k{position:absolute;left:3px;top:0;font-size:9px;font-weight:700;color:#d8ccb5;text-shadow:0 1px 2px #000}
+  #toolinfo{text-align:center;margin-top:4px;font-size:11px;min-height:16px}
+  #slotTip{left:50%;bottom:112px;transform:translateX(-50%);padding:7px 10px;max-width:460px;display:none;pointer-events:none}
+  .rcp{font-size:11px;margin-top:3px} .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;vertical-align:-1px;border:1px solid rgba(0,0,0,.5)}
+  /* minimap */
+  #mini{right:10px;bottom:10px;padding:4px;line-height:0} #mini.off{display:none}
+  #miniC{width:176px;height:176px;image-rendering:pixelated;border-radius:4px;cursor:crosshair}
+  /* inspector */
+  #inspect{right:10px;top:50%;transform:translateY(-50%);width:300px;max-height:calc(100vh - 280px);overflow:auto;display:none}
+  #inspect.on{display:block}
+  #inspect h3,#guide h3{margin:0;padding:7px 11px;font-size:12px;letter-spacing:.04em;color:var(--acc);border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+  .x{cursor:pointer;color:var(--dim);font-size:15px;line-height:1} .x:hover{color:var(--ink)}
+  #inspect .b,#guide .b{padding:8px 11px}
+  #inspect .v{text-align:right;font-weight:600}
+  .prog{height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin:3px 0 5px;overflow:hidden} .prog i{display:block;height:100%}
+  .sec{margin-top:8px;padding-top:5px;border-top:1px solid var(--line);color:var(--dim);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase}
+  .desc{color:var(--dim);font-size:11px;margin-top:6px}
+  .inv{display:inline-flex;align-items:center;gap:2px;margin-left:6px;white-space:nowrap} .inv img{width:16px;height:16px}
+  .opts{display:flex;flex-wrap:wrap;gap:3px} .opt{margin:0;padding:2px 6px;font-size:11px;display:inline-flex;align-items:center;gap:3px} .opt img{width:16px;height:16px} .opt.on{background:rgba(240,169,69,.3);border-color:var(--acc)}
+  .cost{display:inline-flex;align-items:center;gap:1px;margin-right:6px;font-weight:600} .cost img{width:15px;height:15px}
+  img.si{width:15px;height:15px;vertical-align:-3px;margin-right:4px}
+  .mini{margin:2px 0;padding:1px 7px;font-size:11px}
+  .chk{display:flex;gap:6px;align-items:center;margin-top:6px;cursor:pointer}
+  /* hover label */
+  #hover{position:absolute;pointer-events:none;background:rgba(14,12,10,.8);border-radius:4px;padding:2px 7px;font-size:11px;display:none;white-space:nowrap}
+  /* guide */
+  #guide{left:10px;top:90px;width:470px;max-height:calc(100vh - 230px);overflow:auto;display:none} #guide.on{display:block}
+  #guide h4{margin:10px 0 2px;color:var(--acc);font-size:12px} #guide p{margin:2px 0 4px;color:#d8ccb5}
+  #guide .eq{font:11.5px ui-monospace,Menlo,monospace;color:#cfe0ff;background:rgba(0,0,0,.3);padding:2px 6px;border-radius:3px;margin:3px 0;width:fit-content}
+  .obj{display:flex;gap:6px;align-items:center;margin:1px 0} .obj .cb{width:10px;height:10px;border:1px solid rgba(255,255,255,.3);border-radius:2px;flex:none} .obj.done .cb{background:#62c25a;border-color:#62c25a} .obj.done span{color:#9fe08a}
+  /* join */
+  #join{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,rgba(20,16,12,.55),rgba(10,8,6,.9))}
+  #joinBox{position:relative;padding:22px 26px;width:360px}
+  #joinBox h1{margin:0 0 2px;font-size:22px;letter-spacing:.02em;color:var(--acc)}
+  #joinBox input[type=text]{width:100%;box-sizing:border-box;margin:12px 0 8px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.18);border-radius:6px;color:var(--ink);padding:7px 10px;font:inherit;font-size:14px;outline:none}
+  #swatches{display:flex;gap:6px;margin-bottom:12px}
+  .swc{width:22px;height:22px;border-radius:50%;cursor:pointer;border:2px solid transparent} .swc.on{border-color:#fff}
+  #joinBtn{width:100%;padding:8px;font-size:14px;font-weight:600;background:rgba(240,169,69,.3);border-color:var(--acc)}
+  #joinStatus{margin-top:10px;font-size:11px;color:var(--dim)}
+  #bpBtn{cursor:pointer;margin-left:10px;padding:1px 8px;border-radius:6px;border:1px solid var(--line);color:var(--acc);font-size:11px;white-space:nowrap} #bpBtn:hover{background:rgba(255,255,255,.08)}
+  #bp{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(1180px,calc(100vw - 32px));height:min(760px,calc(100vh - 40px));display:none;z-index:40;flex-direction:column} #bp.on{display:flex}
+  #bp h3 .x{cursor:pointer;color:var(--dim,#999)} .bpw{display:flex;flex:1;min-height:0}
+  #bpSide{width:210px;flex:none;overflow:auto;border-right:1px solid var(--line);padding:6px}
+  .bpc{padding:6px 8px;border-radius:7px;cursor:pointer;margin-bottom:3px;font-size:12px} .bpc b{display:inline-block;margin-right:6px} .bpc .dim{font-size:11px} .bpc:hover{background:rgba(255,255,255,.06)} .bpc.on{background:rgba(240,169,69,.16);box-shadow:inset 2px 0 var(--acc)}
+  .legend{margin-top:10px;padding:6px 8px;font-size:11px;border-top:1px solid var(--line)} .legend div{display:flex;align-items:center;gap:6px;margin-top:3px}
+  .bpm{flex:1;display:flex;flex-direction:column;min-width:0} #bpSvg{flex:1;overflow:auto;padding:6px;display:flex;align-items:flex-start;justify-content:safe center} #bpSvg svg{max-width:100%;height:auto}
+  #bpSvg .nl{fill:#eee;font-size:11.5px;font-weight:600} #bpSvg .el{fill:#ddd;font-size:10.5px;paint-order:stroke;stroke:#1a1d21;stroke-width:3.5px;stroke-linejoin:round}
+  #bpSvg .bpn{transition:opacity .2s} #bpSvg .bpn.bld{cursor:pointer} #bpSvg .bpn.bld:hover rect{stroke:#fff}
+  #bpSvg .flow{animation:bpflow 1s linear infinite} @keyframes bpflow{to{stroke-dashoffset:-28}}
+  #bpStep{border-top:1px solid var(--line);padding:9px 12px;font-size:13px}
+  .bph{display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px} .bph .good{color:#7fd06f} .bpt{line-height:1.45}
+  .rcp{font-size:12px;margin-top:4px;opacity:.9} .ports{font-size:11.5px;margin-top:4px;opacity:.85} .ports .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 3px -1px 0}
+  .bpb{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap} .bpb button{background:rgba(255,255,255,.07);color:inherit;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-size:12px} .bpb button:disabled{opacity:.35;cursor:default} .bpb button.pri{background:rgba(240,169,69,.22);border-color:var(--acc)}
+  .bpb .cost img{width:14px;height:14px;vertical-align:-3px}
+  #bpCard{position:fixed;left:50%;top:128px;transform:translateX(-50%);width:min(560px,calc(100vw - 32px));padding:8px 12px;display:none;z-index:30;font-size:13px}
+  #drive{position:fixed;left:50%;bottom:150px;transform:translateX(-50%);padding:7px 14px;font-size:12.5px;line-height:1.6;display:none;z-index:25;text-align:center;max-width:calc(100vw - 32px)}
+  @media (max-width:1150px){ #bb{left:10px;transform:none;max-width:calc(100vw - 290px)} #slotTip{left:10px;transform:none} #feed{bottom:150px;width:min(420px,calc(100vw - 298px))} #chatWrap{bottom:122px} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud" class="glass">
+  <div title="Precast concrete in site stores"><div class="l">Concrete</div><div class="v" id="hm-concrete">—</div></div>
+  <div title="Aluminium extrusions in site stores"><div class="l">Extrusions</div><div class="v" id="hm-alu">—</div></div>
+  <div title="Machinery kits in site stores"><div class="l">Kits</div><div class="v" id="hm-kit">—</div></div>
+  <div id="hPowWrap"><div class="l">Power</div><div class="v" id="hPow" style="font-size:11px">—</div><div class="pb"><i id="hPowBar"></i></div></div>
+  <span id="hudMore" title="Stores &amp; statistics">▾</span>
+</div>
+<div id="stats" class="glass"></div>
+<div id="obj" class="glass"><span id="objQ" title="Field manual (H)">?</span><span id="objT"></span><span id="bpBtn" title="Process diagrams (B)">▦ Diagrams</span></div>
+<div id="bp" class="glass"><h3>Process diagrams — step by step <span class="x" title="Close (B)">✕</span></h3><div class="bpw"><div id="bpSide"></div><div class="bpm"><div id="bpSvg"></div><div id="bpStep"></div></div></div></div>
+<div id="bpCard" class="glass"></div>
+<div id="tr"><div id="players"></div><div id="alerts"></div></div>
+<div id="feed"></div>
+<div id="chatWrap"><input id="chatIn" type="text" maxlength="200" placeholder="Say something… (Enter to send, Esc to cancel)" autocomplete="off"></div>
+<div id="slotTip" class="glass"></div>
+<div id="drive" class="glass"></div>
+<div id="bb" class="glass"><div id="tabs"></div><div id="slots"></div><div id="toolinfo"></div></div>
+<div id="mini" class="glass"><canvas id="miniC"></canvas></div>
+<div id="inspect" class="glass"></div>
+<div id="guide" class="glass"></div>
+<div id="hover"></div>
+<div id="join">
+  <div id="joinBox" class="glass">
+    <h1>Rustworks</h1>
+    <div class="dim">Bauxite to aluminium to rockets. Hold back the bugs.</div>
+    <input id="joinName" type="text" maxlength="16" placeholder="Your name" autocomplete="off">
+    <div id="swatches"></div>
+    <button id="joinBtn" disabled>Clock in</button>
+    <div id="joinStatus">Connecting…</div>
+  </div>
+</div>
+<script src="sim.js?v=7"></script>
+<script src="client.js?v=7"></script>
+</body>
+</html>

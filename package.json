@@ -1,0 +1,8 @@
+{
+  "name": "rustworks",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Multiplayer bauxite-to-aluminium-to-rocket factory game",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node server.js" }
+}
