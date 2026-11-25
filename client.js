@@ -781,6 +781,49 @@ function drawAny(c, e, time, ghost) {
   else if (e.type === 'inserter') { drawInserterBase(c, e); drawInserterArm(c, e); }
   else drawMachine(c, e, ghost);
 }
+// Always-on IN / OUT tags: a pill just outside each port, chute, tipping side and truck bay.
+// Filled in the material colour when hooked up; hollow (outline only) while nothing is connected.
+function ioTag(c, wx, wy, side, io, label, col, linked, out = false) {
+  c.save(); c.translate(wx, wy); c.scale(1 / cam.z, 1 / cam.z);
+  c.font = "bold 9px 'Arial Narrow','PT Sans Narrow','Roboto Condensed',ui-sans-serif,sans-serif";
+  const txt = (io === 'in' ? 'IN' : 'OUT') + (label ? ' · ' + label : ''), w = c.measureText(txt).width + 20, h = 14;
+  const k = out ? 1 : -1, ox = k * DX[side] * (w / 2 + 3), oy = k * DY[side] * (h / 2 + 3);   // tuck inside the building's own edge (outside for road bays)
+  const x = ox - w / 2, y = oy - h / 2;
+  c.fillStyle = linked ? col : 'rgba(18,15,12,.82)'; rrect(c, x, y, w, h, 7); c.fill();
+  c.lineWidth = 1.5; c.strokeStyle = linked ? 'rgba(0,0,0,.55)' : col; if (!linked) c.setLineDash([3, 2]); c.stroke(); c.setLineDash([]);
+  const light = linked && lum(col) > .55, fg = linked ? (light ? '#14110d' : '#fff') : col;
+  drawArrow(c, x + 8, oy, io === 'in' ? (side + 2) % 4 : side, 4, fg);
+  c.fillStyle = fg; c.textAlign = 'left'; c.textBaseline = 'middle'; c.fillText(txt, x + 14, oy + .5); c.textBaseline = 'alphabetic';
+  c.restore();
+}
+function lum(hex) { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex || ''); if (!m) return .5; return (.3 * parseInt(m[1], 16) + .59 * parseInt(m[2], 16) + .11 * parseInt(m[3], 16)) / 255; }
+let ioOn = true;   // I toggles the tags
+const roadAt = (x, y) => { const k = get(x, y); return k && k.type === 'road'; };
+function drawIO(c, e) {
+  const names = cam.z >= 1.1, [fw, fh] = fp(e.type, e.dir);
+  for (const pt of e.ports || []) {
+    const fl = FLUIDS[pt.f];
+    ioTag(c, (pt.mx + .5 + DX[pt.wd] * .5) * T, (pt.my + .5 + DY[pt.wd] * .5) * T, pt.wd, pt.io, names ? fl.n.toUpperCase() : '', fl.col, !!pt.net);
+  }
+  const mid = sd => [(e.x + fw / 2 + DX[sd] * fw / 2) * T, (e.y + fh / 2 + DY[sd] * fh / 2) * T];   // middle of that edge
+  if (S.DISCHARGE[e.type] !== undefined) {
+    const sd = chuteSide(e), [x, y] = mid(sd);
+    ioTag(c, x, y, sd, 'out', names ? (e.type === 'crusher' ? 'CRUSHED ORE' : 'WASHED ORE') : 'ORE', MATCOL.bauxite || '#c0603a', !!S.chuteTarget(e));
+  }
+  if (e.type === 'crusher') for (let sd = 0; sd < 4; sd++) {
+    if (sd === chuteSide(e)) continue;
+    const tl = sideTilesOf(e.x, e.y, fw, fh, sd); if (!tl.some(([a, b]) => roadAt(a, b))) continue;
+    const [x, y] = mid(sd); ioTag(c, x, y, sd, 'in', names ? 'TRUCKS TIP' : 'TIP', '#9cc8ff', true);
+  }
+  if (e.type === 'hopper' || e.type === 'bin') {
+    const [x, y] = mid(e.dir), linked = sideTilesOf(e.x, e.y, fw, fh, e.dir).some(([a, b]) => roadAt(a, b));
+    ioTag(c, x, y, e.dir, e.type === 'hopper' ? 'in' : 'out', e.type === 'hopper' ? 'TRUCKS TIP' : 'TRUCKS LOAD', '#9cc8ff', linked);
+  }
+  if (e.type === 'excavator') {
+    const bx = e.x + 1 + DX[e.dir] * 2, by = e.y + 1 + DY[e.dir] * 2;
+    ioTag(c, (bx + .5 - DX[e.dir] * .5) * T, (by + .5 - DY[e.dir] * .5) * T, e.dir, 'out', 'TRUCK BAY', '#9cc8ff', roadAt(bx, by), true);
+  }
+}
 function drawPortArrows(c, e) {
   for (const pt of e.ports || []) {
     const x = pt.tx * T + 16, y = pt.ty * T + 16;
@@ -1821,6 +1864,7 @@ addEventListener('keydown', e => {
   else if (k === 'f') { if (myTruck()) cmd({ k: 'act' }); }
   else if (bp.open && (k === 'arrowright' || k === 'arrowleft')) { e.preventDefault(); bpAction(k === 'arrowright' ? 'next' : 'prev'); }
   else if (k === 'm') $('mini').classList.toggle('off');
+  else if (k === 'i') { ioOn = !ioOn; feed(ioOn ? 'Input / output tags on (I to hide)' : 'Input / output tags hidden (I to show)'); }
   else if (k === 'enter') { e.preventDefault(); $('chatWrap').classList.add('on'); $('chatIn').focus(); }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
@@ -2052,7 +2096,7 @@ function buildBar() {
 $('tabs').addEventListener('click', e => { const i = e.target.dataset && e.target.dataset.cat; if (i !== undefined) { cat = +i; buildBar(); } });
 function setTool(t) { tool = t; if (t) { sel = null; refreshInspect(true); } buildBar(); updToolInfo(); }
 function updToolInfo() {
-  if (!tool) { $('toolinfo').innerHTML = '<span class="dim">Click a building to inspect · <kbd>1-9</kbd> build · <kbd>H</kbd> guide</span>'; return; }
+  if (!tool) { $('toolinfo').innerHTML = '<span class="dim">Click a building to inspect · <kbd>1-9</kbd> build · <kbd>H</kbd> guide · <kbd>I</kbd> in/out tags</span>'; return; }
   const d = DEFS[tool], dirs = d.w > 1 || d.h > 1 || ['belt', 'inserter', 'feeder', 'ptg', 'pump'].includes(tool);
   const hint = tool === 'pit' ? 'drag a rectangle (start inside a pit to erase)' : ['belt', 'pipe', 'road'].includes(tool) ? 'drag to lay' : tool === 'truck' ? 'click a road' : tool === 'signal' ? 'click a junction' : 'click to place';
   $('toolinfo').innerHTML = `<b>${d.n}</b> ${costTxt(tool)} · ${hint}${dirs ? ` · <kbd>R</kbd> ${DIRN[rot]}` : ''} · <kbd>Esc</kbd>`;
@@ -2770,6 +2814,8 @@ function render(dt, frac) {
   drawNameTag(c, me, me.col, me.name);
   // remote cursors
   for (const [id, o] of others) { const p = roster.get(id); if (p && o.cx !== undefined) { c.globalAlpha = .55; brackets(c, o.cx * T + 3, o.cy * T + 3, T - 6, T - 6, p.col); c.globalAlpha = 1; } }
+  // input / output tags on every visible building (hidden when zoomed far out)
+  if (cam.z >= .55 && ioOn) for (const e of vis) if (e.ports && e.ports.length || S.DISCHARGE[e.type] !== undefined || e.type === 'hopper' || e.type === 'bin' || e.type === 'excavator') drawIO(c, e);
   // tool ghost / hover
   const [tx, ty] = curTile();
   if (targeting && !overUI) {
