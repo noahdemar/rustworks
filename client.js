@@ -1107,9 +1107,11 @@ Object.assign(DRAW, {
 // ---------------------------------------------------------------- world-frame overlays
 function angLerp(a, b, k) { let d = ((b - a + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI; return a + d * k; }
 const smooth01 = x => x * x * (3 - 2 * x);
-function excXform(c, e) {
-  if (e.mvP > 0) c.translate(DX[e.mvD] * e.mvP * T, DY[e.mvD] * e.mvP * T);
-  if (e.tnP > 0) { const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T; c.translate(cx, cy); c.rotate(e.tnD * smooth01(e.tnP) * PI / 2); c.translate(-cx, -cy); }
+function excXform(c, e) {   // draw at the free position and heading, not the 3x3 tile block it occupies
+  if (e.fx === undefined) return;
+  c.translate((e.fx - 1.5 - e.x) * T, (e.fy - 1.5 - e.y) * T);
+  let a = Math.atan2(e.hx, -e.hy) - e.dir * PI / 2; a = Math.atan2(Math.sin(a), Math.cos(a));
+  if (a) { const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T; c.translate(cx, cy); c.rotate(a); c.translate(-cx, -cy); }
 }
 // stockpile on the left of the bay side, spoil heap behind on the right (relative to which way it faces)
 function excHeapPos(e, which) {
@@ -1690,8 +1692,8 @@ function driveInput() {
   el.style.display = 'block';
   el.innerHTML = t
     ? `<b>Ural-6×6 haul truck</b> · ${esc(t.status)} · ${Math.round(Math.abs(t.v || 0) * 60 * 3.6 * 4)} km/h<br><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> steer · stop at a shovel's bay to be loaded · <kbd>F</kbd> tip into a hopper / load from a bin · <kbd>E</kbd> get out`
-    : `<b>Excavator</b> · ${esc(e.status)}${e.pile >= 1 ? ` · stockpile ${Math.round(e.pile)} t` : ''}<br><kbd>W</kbd>/<kbd>S</kbd> crawl forward/back · <kbd>A</kbd>/<kbd>D</kbd> pivot · click ore within 3 tiles to dig there · <kbd>E</kbd> get out`;
-  return t ? vehPos(t) : [e.x + 1.5 + (e.mvP > 0 ? DX[e.mvD] * e.mvP : 0), e.y + 1.5 + (e.mvP > 0 ? DY[e.mvD] * e.mvP : 0)];
+    : `<b>Excavator</b> · ${esc(e.status)}${e.pile >= 1 ? ` · stockpile ${Math.round(e.pile)} t` : ''}<br><kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> turn (works standing still) · truck bay is in front · click ore within 3 tiles to dig there · <kbd>E</kbd> get out`;
+  return t ? vehPos(t) : e.fx !== undefined ? [e.fx, e.fy] : [e.x + 1.5, e.y + 1.5];
 }
 function movePlayer(dt) {
   const vp = driveInput();

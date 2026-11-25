@@ -111,7 +111,7 @@ const DEFS = {
   hopper:    { n: 'Dump hopper', w: 2, h: 2, cost: 20000, desc: 'Trucks tip into it from the road on its arrow side. Choose its material in the inspector. Unload it with an apron feeder.' },
   bin:       { n: 'Load-out bin', w: 2, h: 2, cost: 20000, desc: 'Fill it with an apron feeder; trucks load from the road on its arrow side.' },
   feeder:    { n: 'Apron feeder', w: 1, h: 1, cost: 2500, desc: 'Moves BULK from the tile behind to the tile in front at 4 t/s (hopper → machine, machine → bin).' },
-  excavator: { n: 'Hydraulic excavator', w: 3, h: 3, cost: 220000, desc: 'Strips overburden, then digs ore within 3 tiles straight into a truck waiting at its arrow side. Diesel.' },
+  excavator: { n: 'Hydraulic excavator', w: 3, h: 3, cost: 220000, desc: 'Place on any open land, or drive it (E). Strips overburden, then digs ore within 3 tiles into a truck at its arrow side, or onto a stockpile beside it. Diesel.' },
   pump:      { n: 'Offshore pump', w: 1, h: 1, cost: 8000, desc: 'Place on the shoreline with its back to the water. 60 water/s.', ports: [P(0, 0, 0, 'water', 'out')] },
   substation:{ n: 'Grid connection', w: 2, h: 2, cost: 25000, cap: 30, desc: 'Buys up to 30 MW from the national grid at $20/MW·s. Used after your own generation.' },
   powerplant:{ n: 'Coal power station', w: 5, h: 5, cost: 280000, cap: 25, desc: 'Steam turbine-generator. Coal via apron feeder, plus cooling water. 25 MW.',
@@ -431,7 +431,6 @@ function placeError(type, x, y, dir) {
     if (oreType[cx + cy * W]) ore++;
   }
   for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) if (creep[x + i + (y + j) * W]) return 'Infested ground';
-  if (type === 'excavator' && !excTiles(x, y).some(i => isOre(i) && !cells[i])) return 'No ore within reach';
   if (type === 'oilwell') { let o = 0; for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) if (oreType[x + i + (y + j) * W] === 'oil') o++; if (!o) return 'Needs an oil seep'; }
   if (type === 'pump' && !isWater(x - DX[dir], y - DY[dir])) return 'Needs water behind it';
   return null;
@@ -913,7 +912,7 @@ function exitVehicle(pid) {
       delete t.mx; delete t.my; delete t.hx; delete t.hy; delete t.v;
     } else t.status = 'Parked off-road (drive it back onto a road)';
   }
-  const e = excOf(pid); if (e) { e.drv = 0; e.th = 0; e.st = 0; if (e.status === 'Blocked') e.status = 'Idle'; }
+  const e = excOf(pid); if (e) { e.drv = 0; e.th = 0; e.st = 0; }
 }
 function nearRect(x, y, e, r) {
   const [fw, fh] = fp(e.type, e.dir), nx = Math.max(e.x, Math.min(e.x + fw, x)), ny = Math.max(e.y, Math.min(e.y + fh, y));
@@ -967,29 +966,6 @@ function updManual(t) {
   t.tip = t.tipping ? Math.min(1, (t.tip || 0) + .05) : Math.max(0, (t.tip || 0) - .04);
   if (!t.act && !t.tipping && t.drv) t.status = t.load > 0 ? `Hand-driven · ${Math.round(t.load)} t ${ITEMS[t.mat].n}` : 'Hand-driven · empty';
 }
-function excCanMove(e, d) {
-  const [fw, fh] = fp(e.type, e.dir), nx = e.x + DX[d], ny = e.y + DY[d];
-  for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) {
-    const cx = nx + i, cy = ny + j;
-    if (cx < 0 || cy < 0 || cx >= W || cy >= H || water[cx + cy * W] || creep[cx + cy * W]) return false;
-    const o = cells[cx + cy * W]; if (o && o !== e) return false;
-    if (trucks.some(t => t.tile === cx + cy * W)) return false;
-  }
-  return true;
-}
-function moveExcavator(e, d) {
-  const [fw, fh] = fp(e.type, e.dir), nx = e.x + DX[d], ny = e.y + DY[d];
-  for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) cells[e.x + i + (e.y + j) * W] = null;
-  let ok = true;
-  for (let j = 0; j < fh && ok; j++) for (let i = 0; i < fw; i++) {
-    const cx = nx + i, cy = ny + j;
-    if (cx < 0 || cy < 0 || cx >= W || cy >= H || water[cx + cy * W] || creep[cx + cy * W] || cells[cx + cy * W]) { ok = false; break; }
-    if (trucks.some(t => t.tile === cx + cy * W)) { ok = false; break; }
-  }
-  if (ok) { e.x = nx; e.y = ny; e.dig = -1; computePorts(e); }
-  for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) cells[e.x + i + (e.y + j) * W] = e;
-  return ok;
-}
 function releaseAll() { for (const t of trucks) if (t.drv) exitVehicle(t.drv); for (const e of ents) if (e.drv) exitVehicle(e.drv); }
 
 // =====================================================================
@@ -1004,31 +980,59 @@ function pickDig(e) {
   }
   return best;
 }
+// Tracked driving: continuous position and heading (unit vector, rotated without trig so it is deterministic).
+// The machine occupies the 3x3 tiles under its centre; it counter-rotates its tracks, so it can turn on the spot.
+const EXC_VMAX = 1.3 / 60, EXC_REV = .8 / 60, EXC_ACC = .0011, EXC_TURN = .016;
+function excInit(e) { if (e.fx === undefined) { e.fx = e.x + 1.5; e.fy = e.y + 1.5; e.hx = DX[e.dir]; e.hy = DY[e.dir]; e.v = 0; } }
+function excFree(e, ax, ay) {
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) {
+    const cx = ax + i, cy = ay + j;
+    if (cx < 0 || cy < 0 || cx >= W || cy >= H) return false;
+    const k = cx + cy * W;
+    if (water[k] || creep[k]) return false;
+    const o = cells[k]; if (o && o !== e) return false;
+    for (const t of trucks) if (t.tile === k) return false;
+  }
+  return true;
+}
+const excBay = e => { excInit(e); return [e.fx + e.hx * 2, e.fy + e.hy * 2]; };
+function updExcDrive(e) {
+  excInit(e);
+  const th = e.drv ? e.th | 0 : 0, st = e.drv ? e.st | 0 : 0;
+  if (th > 0) e.v = Math.min(EXC_VMAX, e.v + EXC_ACC);
+  else if (th < 0) e.v = Math.max(-EXC_REV, e.v - EXC_ACC);
+  else e.v = e.v > 0 ? Math.max(0, e.v - EXC_ACC * 2) : Math.min(0, e.v + EXC_ACC * 2);
+  if (st) {
+    const a = st * EXC_TURN * (e.v < 0 ? -1 : 1), hx = e.hx - a * e.hy, hy = e.hy + a * e.hx, l = Math.sqrt(hx * hx + hy * hy);
+    e.hx = hx / l; e.hy = hy / l;
+    const d = Math.abs(e.hx) > Math.abs(e.hy) ? (e.hx > 0 ? 1 : 3) : (e.hy > 0 ? 2 : 0);
+    if (d !== e.dir) { e.dir = d; computePorts(e); e.dig = -1; }
+  }
+  if (e.v !== 0) {
+    const nx = e.fx + e.hx * e.v, ny = e.fy + e.hy * e.v, ax = Math.round(nx - 1.5), ay = Math.round(ny - 1.5);
+    if (ax !== e.x || ay !== e.y) {
+      if (!excFree(e, ax, ay)) { e.v = 0; e.status = 'Blocked'; return true; }
+      for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) cells[e.x + i + (e.y + j) * W] = null;
+      e.x = ax; e.y = ay; e.dig = -1;
+      for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) cells[e.x + i + (e.y + j) * W] = e;
+    }
+    e.fx = nx; e.fy = ny;
+  }
+  if (e.v === 0 && !st) return false;
+  e.anim++; e.target = -1; burnDiesel(DIESEL_EXC * DT * 1.5);
+  e.status = e.v !== 0 ? 'Driving' : 'Turning on the spot';
+  return true;
+}
 const EXC_PILE_CAP = 150;   // t of loose ore it will cast onto a stockpile beside itself while no truck is at the bay
 function updExcavator(e) {
-  // hand-driven: tracked like a tank. W/S crawl forward/back a tile, A/D pivot 90 degrees; each move is finished once started.
-  if (e.drv && !e.mvP && !e.tnP) {
-    if (e.th) { const d = e.th > 0 ? e.dir : (e.dir + 2) % 4; if (excCanMove(e, d)) { e.mvD = d; e.mvP = 1e-6; } else e.status = 'Blocked'; }
-    else if (e.st) { e.tnD = e.st > 0 ? 1 : -1; e.tnP = 1e-6; }
-  }
-  if (e.mvP > 0) {
-    e.mvP += EXC_CRAWL; e.anim++; e.target = -1; burnDiesel(DIESEL_EXC * DT * 1.5); e.status = 'Crawling';
-    if (e.mvP >= 1) { e.mvP = 0; if (!moveExcavator(e, e.mvD)) e.status = 'Blocked'; }
-    return;
-  }
-  if (e.tnP > 0) {
-    e.tnP += 1 / 75; e.anim++; e.target = -1; burnDiesel(DIESEL_EXC * DT); e.status = 'Pivoting';
-    if (e.tnP >= 1) { e.tnP = 0; e.dir = (e.dir + e.tnD + 4) % 4; computePorts(e); e.dig = -1; }
-    return;
-  }
-  if (e.drv && e.status === 'Blocked') return;
+  if (updExcDrive(e)) return;
   if (e.pref >= 0 && e.pref !== e.dig && isOre(e.pref) && !cells[e.pref] && excTiles(e.x, e.y).includes(e.pref)) e.dig = e.pref;
   if (e.dig < 0 || !isOre(e.dig) || cells[e.dig]) e.dig = pickDig(e);
   const face = e.dig >= 0 ? oreType[e.dig] : null, pile = e.pile || 0;
   e.mat = pile >= 1 ? e.pileMat : face;   // what the next truck will get
   const bay = bays(e)[0];
-  const bx = e.x + 1.5 + DX[e.dir] * 2, by = e.y + 1.5 + DY[e.dir] * 2;
-  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.44 && t.load < TRUCK_CAP && !t.full
+  const [bx, by] = excBay(e);
+  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.69 && t.load < TRUCK_CAP && !t.full
     : bay !== undefined && t.tile === bay && t.next < 0 && t.state === 'loading' && t.job && t.job.src === e);
   // a truck at the bay: rehandle the stockpile first (loose material loads faster)
   if (tr && pile >= 1) {
@@ -1446,7 +1450,7 @@ function applyCmd(pid, c) {
   switch (c.k) {
     case 'place': if (DEFS[c.type] && !DEFS[c.type].tool) place(c.type, x, y, (c.dir | 0) & 3, false, pid); break;
     case 'remove': { const e = get(x, y); if (e) removeEnt(e, pid); break; }
-    case 'rotate': { const e = get(x, y); if (e) rotateEnt(e, c.d === 3 ? 3 : 1); break; }
+    case 'rotate': { const e = get(x, y); if (e) { rotateEnt(e, c.d === 3 ? 3 : 1); if (e.type === 'excavator' && e.fx !== undefined) { e.hx = DX[e.dir]; e.hy = DY[e.dir]; } } break; }
     case 'setdir': { const e = get(x, y); if (e && e.type === 'belt') { e.dir = (c.dir | 0) & 3; rebuild(); } break; }
     case 'depot': { const e = get(x, y); if (e && e.type === 'depot' && IMPORTS.includes(c.sel) && e.sel !== c.sel) { e.sel = c.sel; e.acc = 0; } break; }
     case 'hopper': { const e = get(x, y); if (e && e.type === 'hopper' && (c.mat === null || BULK.has(c.mat)) && e.stock < 1) { e.mat = c.mat; e.stock = 0; } break; }
@@ -1541,7 +1545,7 @@ function checksum() {
     if (e.T !== undefined) { mix(e.T); mix(e.al); mix(e.metal); }
     if (e.stock !== undefined) mix(e.stock);
     if (e.pile) mix(e.pile);
-    if (e.mvP || e.tnP) { mix(e.mvP || 0); mix(e.tnP || 0); }
+    if (e.fx !== undefined) { mix(e.fx); mix(e.fy); mix(e.hx); }
     if (e.inb) for (const k in e.inb) mix(e.inb[k]);
     if (e.fin) for (const k in e.fin) mix(e.fin[k]);
     if (e.net) mix(e.net.amt);
