@@ -136,8 +136,8 @@ const DEFS = {
   excavator: { n: 'Hydraulic excavator', w: 3, h: 3, cost: 220000, desc: 'Place on any open land, or drive it (E). Strips overburden, then digs ore within 3 tiles into a truck at its arrow side, or onto a stockpile beside it. Diesel.' },
   pit:       { n: 'Pit outline', w: 1, h: 1, cost: 0, tool: true, desc: 'Drag a rectangle to lay out an open pit (drag again over it to remove). Excavators and drill rigs that reach the pit work only inside it, bench by bench.' },
   drill:     { n: 'Drill rig', w: 2, h: 2, cost: 60000, desc: 'Track-mounted blast-hole drill. Drills stripped hard rock within 6 tiles in patterns of 6 holes, charges them with ANFO (by inserter, 1 crate per 2 holes) and fires. Unblasted hard rock digs at a crawl. Diesel.' },
-  crusher:   { n: 'Primary crusher', w: 3, h: 3, cost: 90000, power: 1.2, desc: 'Run-of-mine pad (300 t) and jaw crusher. Trucks tip ROM ore from any adjacent road. Crushed ore leaves by apron feeder at up to 5 t/s.' },
-  washplant: { n: 'Bauxite wash plant', w: 3, h: 4, cost: 70000, power: .6, desc: 'Log washer, scrubber and screens strip clay and fines from crushed bauxite: higher Al₂O₃, about half the reactive silica gone, 8-18 % of the mass lost. Tailings slurry leaves by pipe.',
+  crusher:   { n: 'Primary crusher', w: 3, h: 3, cost: 90000, power: 1.2, desc: 'Run-of-mine pad (300 t) and jaw crusher. Trucks tip ROM ore from a road along any side. Crushed ore drops out of the chute on the arrow side into whatever touches it: wash plant, ball mill or load-out bin.' },
+  washplant: { n: 'Bauxite wash plant', w: 3, h: 4, cost: 70000, power: .6, desc: 'Log washer, scrubber and screens strip clay and fines from crushed bauxite: higher Al₂O₃, about half the reactive silica gone, 8-18 % of the mass lost. Takes crushed ore from a crusher chute (or feeder); washed ore leaves by its own chute, right of the arrow, into a mill or bin. Tailings slurry leaves by pipe.',
                ports: [P(0, 3, 2, 'water', 'in'), P(2, 0, 0, 'tailings', 'out')] },
   tailings:  { n: 'Tailings dam', w: 5, h: 5, cost: 25000, desc: 'Clay-lined pond with a decant tower. Takes wash tailings by pipe (south port). 50,000 units.', ports: [P(2, 4, 2, 'tailings', 'in')] },
   grader:    { n: 'Grader shed', w: 2, h: 2, cost: 30000, desc: 'Houses a motor grader. It works haul roads within 28 tiles, cutting out the ruts that slow loaded trucks and burn their fuel. Needs a road beside the shed. Diesel.' },
@@ -1305,13 +1305,36 @@ function updDrill(e) {
   e.status = `Drilling hole ${e.holes.length + 1}/${PATTERN}`;
   if (e.dprog >= 1) { e.holes.push(e.cur); e.cur = -1; e.dprog = 0; }
 }
+// Built-in discharge chute: crushed or washed ore drops straight into whatever building touches the chute side
+// (wash plant, ball mill, bin, hopper...). An apron feeder there instead also works. Side is relative to the arrow.
+const DISCHARGE = { crusher: 0, washplant: 1 };
+const NOT_TARGET = new Set(['road', 'pipe', 'ptg', 'feeder', 'belt', 'pole', 'wall']);
+function chuteTarget(e) {
+  for (const [x, y] of sideTiles(e, (e.dir + DISCHARGE[e.type]) % 4)) { const k = get(x, y); if (k && k !== e && !NOT_TARGET.has(k.type)) return k; }
+  return null;
+}
+function discharge(e) {
+  const k = chuteTarget(e); e.dFlow = 0; e.dTo = k ? k.type : null;
+  if (!k) { e.dSt = 'none'; return; }
+  const [m, av] = bulkAvail(e);
+  if (!m || av <= 1e-9) { e.dSt = 'ok'; return; }
+  const room = bulkRoom(k, m);
+  if (room <= 1e-9) { e.dSt = k.type === 'bin' || k.type === 'hopper' || (k.inb && DEFS[k.type].ilim[m]) ? 'full' : 'refuses'; return; }
+  const mv = Math.min(FEEDER_RATE * DT, av, room);
+  bulkMove(e, k, m, mv); e.dFlow = mv; e.dSt = 'ok';
+}
+function chuteMsg(e, what) {
+  return e.dSt === 'none' ? `${what} backing up — nothing at the chute (▶ side)`
+    : e.dSt === 'refuses' ? `${what} backing up — ${DEFS[e.dTo].n} doesn't take it`
+    : `${what} backing up — ${DEFS[e.dTo].n} is full`;
+}
 function updCrusher(e) {
   e.wants = 0; e.flow = 0;
   if (e.stock < 1e-6) { e.stock = 0; if (e.mat && !(e.outb[CRUSHED[e.mat]] > 1e-9)) e.mat = null; }
   if (!e.mat || e.stock <= 0) { e.status = 'ROM pad empty'; return; }
   const out = CRUSHED[e.mat], have = e.outb[out] || 0;
   for (const k in e.outb) if (k !== out && e.outb[k] > 1e-9) { e.status = 'Clearing ' + ITEMS[k].n; return; }
-  if (have >= 20) { e.status = 'Crushed ore backing up — feeder blocked or missing'; return; }
+  if (have >= 20) { e.status = chuteMsg(e, 'Crushed ore'); return; }
   e.wants = DEFS.crusher.power;
   if (satO <= 0) { e.status = 'No power'; return; }
   const mv = Math.min(CRUSH_RATE * satO * DT, e.stock, 20 - have);
@@ -1325,7 +1348,7 @@ function updWash(e) {
   if (!e.wact) {
     if ((e.inb.bauxite || 0) < 4 - 1e-9) { e.status = 'Missing: crushed bauxite'; return; }
     if ((e.fin.water || 0) < 30 - 1e-9) { e.status = 'Missing: Water' + (e.ports[0].net ? '' : ' (no pipe)'); return; }
-    if ((e.outb.bauxite || 0) > 6 || (e.fout.tailings || 0) > 90) { e.status = (e.fout.tailings || 0) > 90 ? 'Tailings backing up — pipe to a dam' : 'Output full'; return; }
+    if ((e.outb.bauxite || 0) > 6 || (e.fout.tailings || 0) > 90) { e.status = (e.fout.tailings || 0) > 90 ? 'Tailings backing up — pipe to a dam' : chuteMsg(e, 'Washed ore'); return; }
     const [a, si] = gradeOf(e), m = .06 + .012 * si;            // fines carry clay: high silica, lower alumina
     const t = 4 * (1 - m), al = (a / 100 * 4 - m * 4 * .3) / t, sil = (si / 100 * 4 * .5) / t;
     e.inb.bauxite -= 4; e.fin.water -= 30;
@@ -1738,8 +1761,8 @@ function step() {
       case 'feeder': updFeeder(e); break;
       case 'excavator': updExcavator(e); break;
       case 'drill': updDrill(e); break;
-      case 'crusher': updCrusher(e); break;
-      case 'washplant': updWash(e); break;
+      case 'crusher': updCrusher(e); discharge(e); break;
+      case 'washplant': updWash(e); discharge(e); break;
       case 'tailings': updTailings(e); break;
       case 'grader': updGrader(e); break;
       case 'road': if (e.sig) updSignal(e); break;
@@ -1901,7 +1924,7 @@ const Sim = {
   T, W, H, DX, DY, DIRN, DT, CHEST_CAP, RESIDUE_CAP, BIN_CAP, TRUCK_CAP, EXC_REACH, ALUMINA_PER_FEED,
   ITEMS, FLUIDS, BULK, ALLOC, IMPORTS, MATS, DEFS, GROUPS, POT_IN, stores, costOf, canAfford, shortOf,
   hash, mulberry, vnoise, fbm, waterField, water, isWater, oreType, oreAmt, ob, oreInit, oreInitAmt, obInit,
-  cells, ents, trucks, heaps, stats, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
+  cells, ents, trucks, heaps, stats, DISCHARGE, chuteTarget, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
   get, fp, l2w, makeEnt, canPlace, placeError, place, removeEnt, beltPoint, handPos, isPipe, isJunction, bays, excTiles,
   hard, gA, gS, elev0, frag, pit, depthM, elevAt, benchOf, needsBlast, digFactor, capOf, DENS, SWELL, ROM_OF, CRUSHED, ROM_PAD, DRILL_R, GRADER_R, PATTERN, TAIL_CAP, BUCKET_M3, DEF_G, GRADED, gradeOf, bucketT, cycleOf, speedFor, gradeBetween,
   step, applyCmd, serialize, load, checksum, newWorld, SPAWN, SAFE_R, get seed() { return SEED; }, get patches() { return patchList; },

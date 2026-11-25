@@ -2111,14 +2111,14 @@ const OBJ = [
   { t: 'Lay out a pit over the bauxite near the landing site', why: 'Mining tab → Pit outline, then drag. Hover the ore first: it shows tonnes, hardness and the Al₂O₃ assay.', ok: () => S.pit.some(v => v), ch: 'Open-pit mine', st: 0, where: 'bauxite' },
   { t: 'Lay a haul road past the pit', why: 'Haulage tab → Haul road. Roads are free; drag to lay them.', ok: () => ents.some(e => e.type === 'road'), ch: 'Open-pit mine', st: 1, where: 'bauxite' },
   { t: 'Place an excavator at the face, its arrow on the road', why: 'The arrow marks the truck bay, 2 tiles out. It strips overburden even before any truck arrives.', ok: () => ents.some(e => e.type === 'excavator'), ch: 'Open-pit mine', st: 2, where: 'bauxite' },
-  { t: 'Build a primary crusher beside the road', why: 'Dug ore is run-of-mine lumps. Nothing else accepts it until it is crushed.', ok: () => ents.some(e => e.type === 'crusher'), ch: 'Open-pit mine', st: 5, where: 'excavator' },
+  { t: 'Build a primary crusher with a road along one side', why: 'Trucks tip raw lumps in from the road; crushed ore drops out of the ▶ chute on its arrow side. Aim the arrow at open ground for the next machine.', ok: () => ents.some(e => e.type === 'crusher'), ch: 'Open-pit mine', st: 5, where: 'excavator' },
   { t: 'Put two haul trucks on the road', why: 'The dispatcher runs them shovel → crusher on its own.', ok: () => trucks.length >= 2, ch: 'Open-pit mine', st: 6, where: 'excavator' },
   { t: 'Put up tripod sentries before the raids start', why: 'Defence tab. Cheap, unpowered, 60 rounds each. Ring the side of the base that faces the colonies.', ok: () => ents.some(e => (e.type === 'turret' || e.type === 'sentry') && (e.rounds > 0 || (e.inb.ammo || 0) > 0)), ch: 'Defence', st: 0, where: 'hive' },
   { t: 'Crush 150 t of ore', why: 'Caprock digs at a crawl until blasted; be patient or move on to the drill rig.', ok: () => (stats.crushed || 0) >= 150, ch: 'Open-pit mine', st: 6, where: 'crusher' },
   { t: 'Fire a blast: drill rig + ANFO from a supply depot', why: 'Hard rock digs ~7× faster once broken. One ANFO crate charges two holes.', ok: () => (stats.blasts || 0) >= 1, ch: 'Open-pit mine', st: 3, where: 'excavator' },
   { t: 'Requisition machinery kits into site stores', why: 'Supply depot set to Machinery kits, inserter into a Site stores building.', ok: () => (stats.delivered.kit || 0) > 0, ch: 'Construction materials', st: 1 },
   { t: 'Pump water and charge the caustic liquor circuit', why: 'Offshore pump on the shore; caustic make-up tank fed with caustic bags from a depot.', ok: () => (stats.fmade.liquor || 0) > 0, ch: 'Bayer refinery', st: 0, where: 'shore' },
-  { t: 'Grind crushed bauxite to slurry in a ball mill', why: 'Feeder from the crusher (or wash plant) straight into the mill; liquor pipe on its south side.', ok: () => (stats.fmade.slurry || 0) > 0, ch: 'Bayer refinery', st: 1, where: 'crusher' },
+  { t: 'Grind crushed bauxite to slurry in a ball mill', why: 'Set the mill right against the crusher\'s (or wash plant\'s) ▶ chute: the tiles go green. Liquor pipe on its south side.', ok: () => (stats.fmade.slurry || 0) > 0, ch: 'Bayer refinery', st: 1, where: 'crusher' },
   { t: 'Precipitate alumina hydrate', why: 'Digester → settler → precipitator. Follow the Bayer refinery diagram step by step.', ok: () => (stats.made.gibbsite || 0) >= 1, ch: 'Bayer refinery', st: 5, where: 'mill' },
   { t: 'Calcine alumina', why: 'Hydrate by truck to a hopper, feeder into the calciner, plus coal.', ok: () => (stats.fmade.alumina || 0) >= 100, ch: 'Bayer refinery', st: 8, where: 'precipitator' },
   { t: 'Tap molten aluminium from a reduction cell', why: 'Cells take power first and freeze for good if starved.', ok: () => (stats.made.crucible || 0) >= 1, ch: 'Smelter', st: 0, where: 'calciner' },
@@ -2282,10 +2282,12 @@ function entPanel(e) {
       kv('ANFO in magazine', invList(e.inb, DEFS.drill.ilim)) + kv('Charge', `${Math.ceil(Math.max(1, e.holes.length) / 2)} crate(s) for this pattern`) + kv('Blasts fired', `${stats.blasts || 0}`) +
       `<div class="desc">${d.desc}</div><div class="desc">Set a supply depot to ANFO and inserter the crates into the magazine. Strip the overburden first: the rig only drills exposed rock.</div>`;
   } else if (e.type === 'crusher') {
-    h += kv('ROM pad', `${Math.round(e.stock)} / ${S.ROM_PAD} t ${e.mat ? ITEMS[e.mat].n : ''}`) + bar(e.stock / S.ROM_PAD, e.mat ? MATCOL[e.mat] : '#555') +
+    let roads = 0; { const [fw, fh] = fp(e.type, e.dir); for (let sd = 0; sd < 4; sd++) for (const [x, y] of sideTilesOf(e.x, e.y, fw, fh, sd)) if (get(x, y) && get(x, y).type === 'road') roads++; }
+    h += kv('Ore comes from', roads ? `trucks tipping from ${roads} road tile${roads > 1 ? 's' : ''} alongside` : 'nothing yet: run a haul road along any side', roads ? '' : 'warn') + chuteRow(e) +
+      kv('ROM pad', `${Math.round(e.stock)} / ${S.ROM_PAD} t ${e.mat ? ITEMS[e.mat].n : ''}`) + bar(e.stock / S.ROM_PAD, e.mat ? MATCOL[e.mat] : '#555') +
       (e.mat && S.GRADED.has(e.mat) ? kv('Assay', assay(S.gradeOf(e))) : '') + kv('Crushed', invList(e.outb)) + kv('Rate', `${(e.flow * 60).toFixed(1)} t/s`) + kv('Power', `${d.power} MW`) + `<div class="desc">${d.desc}</div>`;
   } else if (e.type === 'washplant') {
-    h += bar(e.wact ? e.prog : 0) + kv('Feed', `${(e.inb.bauxite || 0).toFixed(1)} t · ${assay(S.gradeOf(e))}`) + kv('Washed', (e.outb.bauxite || 0) > .05 ? `${e.outb.bauxite.toFixed(1)} t · ${assay(S.gradeOf(e, 'oga', 'ogs'))}` : '—') +
+    h += kv('Ore comes from', S.ents.some(o => o.type === 'crusher' && S.chuteTarget(o) === e) ? 'crusher chute ✓' : 'a crusher chute or apron feeder on any side', '') + chuteRow(e) + bar(e.wact ? e.prog : 0) + kv('Feed', `${(e.inb.bauxite || 0).toFixed(1)} t · ${assay(S.gradeOf(e))}`) + kv('Washed', (e.outb.bauxite || 0) > .05 ? `${e.outb.bauxite.toFixed(1)} t · ${assay(S.gradeOf(e, 'oga', 'ogs'))}` : '—') +
       (e.batch ? kv('Mass to tailings', `${(e.batch[3] * 100).toFixed(0)} %`) : '') + kv('Water', invList(e.fin, DEFS.washplant.flim, true)) + kv('Tailings', invList(e.fout, null, true)) + kv('Power', `${d.power} MW`) + `<div class="desc">${d.desc}</div>`;
   } else if (e.type === 'tailings') {
     h += kv('Stored', `${fmt(e.fill)} / ${fmt(S.TAIL_CAP)}`) + bar(e.fill / S.TAIL_CAP, '#a0805a') + `<div class="desc">${d.desc}</div>`;
@@ -2424,20 +2426,20 @@ function renderGuide() {
 const CHAINS = [
   { name: 'Open-pit mine', blurb: 'Strip, drill, blast, dig, haul, crush, wash.',
     nodes: [['ore', '@Ore body:bauxite', 0, 1.2], ['pit', 'pit', 0, 0, 'Pit outline'], ['dep', 'depot', 1, 0, 'Depot (ANFO)'], ['drl', 'drill', 1, 1.2, 'Drill rig'], ['exc', 'excavator', 2, 1.2], ['road', 'road', 2.5, 0, 'Haul road'], ['grd', 'grader', 3.5, 0, 'Grader'],
-      ['cru', 'crusher', 3, 1.2], ['fd1', 'feeder', 3.7, 2.2], ['wsh', 'washplant', 4.4, 1.2], ['dam', 'tailings', 4.4, 2.6, 'Tailings dam'], ['mill', 'mill', 5.6, 1.2]],
+      ['cru', 'crusher', 3, 1.2], ['wsh', 'washplant', 4.3, 1.2], ['dam', 'tailings', 4.4, 2.6, 'Tailings dam'], ['mill', 'mill', 5.6, 1.2]],
     edges: [['pit', 'ore', '', 'adj'], ['dep', 'drl', 'anfo', 'ins'], ['drl', 'ore', 'blast', 'dig'], ['ore', 'exc', 'broken rock', 'dig'], ['exc', 'cru', 'rombx', 'truck'], ['road', 'exc', '', 'adj'], ['road', 'cru', '', 'adj'], ['grd', 'road', 'grading', 'adj'],
-      ['cru', 'wsh', 'bauxite', 'feeder'], ['wsh', 'dam', 'tailings', 'pipe'], ['wsh', 'mill', 'bauxite', 'feeder']],
+      ['cru', 'wsh', 'crushed ore · chute', 'feeder'], ['wsh', 'dam', 'tailings', 'pipe'], ['wsh', 'mill', 'washed ore · chute', 'feeder']],
     steps: [
       { t: 'Hover over ore to read it: tonnes, hardness, and for bauxite the assay (Al₂O₃ is what you sell; reactive SiO₂ eats caustic). Drag a pit outline over the best ground. Shovels and drills that reach a pit work only inside it, one bench at a time.', on: ['pit', 'ore'], tool: 'pit', done: () => S.pit.some(v => v) },
       { t: 'Lay a haul road past the pit and on toward the plant. Roads are free. Keep ramps gentle: a loaded truck crawls up a steep grade and burns far more fuel.', on: ['road'], tool: 'road' },
       { t: 'Place an excavator at the face with its arrow (the truck bay) on the road. It strips the soft overburden to a spoil heap first, then digs in 12 m³ bucket passes.', on: ['ore', 'exc', 'road'], tool: 'excavator' },
       { t: 'Hard caprock and limestone dig at a crawl until blasted. Put a drill rig within 6 tiles of the stripped rock. It drills a pattern of 6 holes, then fires.', on: ['drl', 'ore'], tool: 'drill' },
       { t: 'Set a supply depot to ANFO and inserter the crates into the drill rig\'s magazine: one crate charges two holes.', on: ['dep', 'drl'], done: () => ents.some(e => e.type === 'depot' && e.sel === 'anfo') },
-      { t: 'Build a primary crusher beside the road. Dug ore is run-of-mine (ROM) lumps: trucks tip it on the crusher\'s 300 t pad, and nothing downstream takes ROM.', on: ['cru', 'road'], tool: 'crusher' },
+      { t: 'Build a primary crusher with a road along one side. Think of it as a doorway: trucks tip run-of-mine lumps onto its 300 t pad from the road (blue tiles), and crushed ore drops out of the ▶ chute on its arrow side (yellow tiles). Point the arrow where the wash plant will go.', on: ['cru', 'road'], tool: 'crusher' },
       { t: 'Put haul trucks on the road. Each takes 60 m³: about 87 t of bauxite or limestone, but only 54 t of coal, which fills the body before the scales.', on: ['exc', 'cru'], tool: 'truck' },
-      { t: 'Feeder from the crusher into a bauxite wash plant (water in, south). It sheds clay and fines: higher Al₂O₃, half the silica gone. Pipe the tailings to a tailings dam.', on: ['cru', 'fd1', 'wsh', 'dam'], tool: 'washplant' },
+      { t: 'Set a bauxite wash plant right against the crusher\'s ▶ chute: the tiles turn green when it connects. Pipe water in (south port). It sheds clay and fines: higher Al₂O₃, half the silica gone. Its own chute is on the right of its arrow.', on: ['cru', 'wsh', 'dam'], tool: 'washplant' },
       { t: 'Tailings dam on the end of the tailings pipe (its port is on the south side).', on: ['wsh', 'dam'], tool: 'tailings' },
-      { t: 'Feeder from the wash plant into the ball mill (or into a load-out bin for trucks). Richer, cleaner ore gives more slurry per batch and costs less liquor.', on: ['wsh', 'mill'], tool: 'feeder' },
+      { t: 'Put a ball mill (or a load-out bin, if the refinery is far away and trucks will carry it) against the wash plant\'s ▶ chute. Richer, cleaner ore gives more slurry per batch and costs less liquor. An apron feeder bridges a one-tile gap if you need one.', on: ['wsh', 'mill'], tool: 'mill' },
       { t: 'Loaded trucks wear ruts into the road, which slow them and burn fuel. A grader shed sends a grader to cut the ruts out of roads within 28 tiles.', on: ['grd', 'road'], tool: 'grader' },
       { t: 'Where roads cross, a traffic signal lets trucks take turns instead of queueing for the box.', on: ['road'], tool: 'signal' },
     ] },
@@ -2478,7 +2480,7 @@ const CHAINS = [
       ['was', 'binM', 'redmud', 'feeder'], ['binH', 'calc', 'gibbsite', 'truck'], ['binM', 'res', 'redmud', 'truck']],
     steps: [
       { t: 'Set a supply depot to Caustic soda and run an inserter into the caustic make-up tank. Pipe water in from an offshore pump. This charges the liquor circuit.', on: ['depC', 'dis'], tool: 'dissolver', where: 'shore' },
-      { t: 'Ball mill: liquor in on the south, slurry out on the north, crushed bauxite by feeder straight from the crusher or wash plant. (Far from the mine? Load-out bin → trucks → a hopper set to Bauxite → feeder.)', on: ['dis', 'hopB', 'mill'], tool: 'mill' },
+      { t: 'Ball mill: liquor in on the south, slurry out on the north, crushed bauxite straight from the crusher\'s or wash plant\'s ▶ chute (set the mill against it). (Far from the mine? Load-out bin → trucks → a hopper set to Bauxite → feeder.)', on: ['dis', 'hopB', 'mill'], tool: 'mill' },
       { t: 'Lime kiln: limestone and coal by feeders. Inserter its quicklime bags into the digester.', on: ['kiln', 'dig'], tool: 'limekiln' },
       { t: 'Digester: slurry and steam pipes in on the south, digested slurry out on the north.', on: ['mill', 'boil', 'dig'], tool: 'digester' },
       { t: 'Settler: digested slurry in on the south, pregnant liquor out on the north, mud underflow out on the east. Flocculant drums by inserter from a depot.', on: ['dig', 'cla', 'depF'], tool: 'clarifier' },
@@ -2566,7 +2568,8 @@ function portHint(type) {
   const side = ['north', 'east', 'south', 'west'];
   const parts = (d.ports || []).map(p => `<span class="sw" style="background:${FLUIDS[p.f].col}"></span>${FLUIDS[p.f].n} ${p.io === 'in' ? 'in' : 'out'} on the ${side[p.d]}`);
   if (type === 'excavator') parts.push('truck bay 2 tiles out on the arrow side');
-  if (type === 'crusher') parts.push('trucks tip from any adjacent road');
+  if (type === 'crusher') parts.push('trucks tip from a road along any side', 'crushed ore drops out of the ▶ chute on the arrow side into the building touching it (wash plant, mill or bin)');
+  if (type === 'washplant') parts.push('crushed ore in from a crusher chute or feeder', 'washed ore out of the ▶ chute on the right of the arrow (east) into a mill or bin');
   if (type === 'drill') parts.push('drills stripped hard rock within 6 tiles; ANFO by inserter');
   if (type === 'grader') parts.push('road beside the shed');
   if (type === 'hopper' || type === 'bin') parts.push('road on the arrow side');
@@ -2731,7 +2734,7 @@ function render(dt, frac) {
   for (const e of bld) {
     if (e.type === 'excavator') {
       c.save(); excXform(c, e); drawMachine(c, e); drawExcavatorTop(c, e, dt); c.restore();
-    } else if (e.type === 'inserter') drawInserterBase(c, e); else drawMachine(c, e);
+    } else if (e.type === 'inserter') drawInserterBase(c, e); else { drawMachine(c, e); if (S.DISCHARGE[e.type] !== undefined) drawChute(c, e, time); }
     if (e.type === 'pad' && e.rocket) drawRocketStanding(c, e);
     if ((working(e) || (e.type === 'powerplant' && e.gen > 0) || (e.type === 'pot' && e.T > 600 && !e.frozen)) && DEFS[e.type].stacks) spawnStacks(e);
   }
@@ -2804,6 +2807,9 @@ function render(dt, frac) {
       }
       if (tool === 'drill') { c.strokeStyle = 'rgba(255,206,74,.6)'; c.lineWidth = 2 / cam.z; c.setLineDash([6, 5]); circle(c, (ax + 1) * T, (ay + 1) * T, S.DRILL_R * T); c.stroke(); c.setLineDash([]); }
       if (tool === 'grader') { const r = S.GRADER_R * T, cx = (ax + 1) * T, cy = (ay + 1) * T; c.strokeStyle = 'rgba(200,180,120,.45)'; c.lineWidth = 2 / cam.z; c.setLineDash([6, 5]); c.beginPath(); c.moveTo(cx, cy - r); c.lineTo(cx + r, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r, cy); c.closePath(); c.stroke(); c.setLineDash([]); }
+      if (S.DISCHARGE[tool] !== undefined) markChute(c, ax, ay, fw, fh, tool, rot, CHUTE_OUT[tool]);
+      if (tool === 'crusher') { c.fillStyle = 'rgba(120,180,255,.3)'; for (let sd = 0; sd < 4; sd++) for (const [x, y] of sideTilesOf(ax, ay, fw, fh, sd)) if (get(x, y) && get(x, y).type === 'road') c.fillRect(x * T + 2, y * T + 2, T - 4, T - 4); }
+      if (['washplant', 'mill', 'bin', 'hopper', 'feeder', 'crusher'].includes(tool)) for (const o of vis) if (S.DISCHARGE[o.type] !== undefined) { const [ow, oh] = fp(o.type, o.dir); markChute(c, o.x, o.y, ow, oh, o.type, o.dir, CHUTE_OUT[o.type]); }
       if (tool === 'hopper' || tool === 'bin') { c.fillStyle = 'rgba(100,220,100,.3)'; for (const [x, y] of sideTilesOf(ax, ay, fw, fh, rot)) c.fillRect(x * T + 2, y * T + 2, T - 4, T - 4); }
       if (tool === 'pump') { c.fillStyle = isWater(ax - DX[rot], ay - DY[rot]) ? 'rgba(100,180,240,.3)' : 'rgba(220,40,30,.3)'; c.fillRect((ax - DX[rot]) * T + 2, (ay - DY[rot]) * T + 2, T - 4, T - 4); }
       c.globalAlpha = .55; if (tool === 'road') drawRoad(c, g); else drawAny(c, g, time, true); c.globalAlpha = 1;
@@ -2815,7 +2821,7 @@ function render(dt, frac) {
     const w = s2w(mx, my), t = truckAt(w.x, w.y);
     const e = get(tx, ty);
     if (t) brackets(c, t._x - 14, t._y - 14, 28, 28);
-    else if (e) { const [fw, fh] = fp(e.type, e.dir); brackets(c, e.x * T + 1, e.y * T + 1, fw * T - 2, fh * T - 2); if (e.ports) drawPortArrows(c, e); }
+    else if (e) { const [fw, fh] = fp(e.type, e.dir); brackets(c, e.x * T + 1, e.y * T + 1, fw * T - 2, fh * T - 2); if (e.ports) drawPortArrows(c, e); if (S.DISCHARGE[e.type] !== undefined) markChute(c, e.x, e.y, fw, fh, e.type, e.dir, CHUTE_OUT[e.type]); }
   }
   if (sel && sel.kind === 'ent') { const e = get(sel.x, sel.y); if (e) { const [fw, fh] = fp(e.type, e.dir); brackets(c, e.x * T - 2, e.y * T - 2, fw * T + 4, fh * T + 4, '#7fd4ff'); } }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2890,6 +2896,40 @@ function drawGrader(c, e, dt) {
   c.save(); c.rotate(.35); c.fillStyle = '#8a8d90'; c.fillRect(-10, -3, 20, 2.5); c.restore();
   c.restore();
   if (e.status === 'Grading road' && Math.random() < .3) particles.push({ x, y, vx: (Math.random() - .5) * .3, vy: -.15, life: 0, max: 50, r: 4, k: 'dust' });
+}
+// discharge chute on crushers and wash plants: where the ore leaves, and a live stream when it flows
+const CHUTE_OUT = { crusher: 'CRUSHED ORE OUT', washplant: 'WASHED ORE OUT' };
+const chuteSide = e => (e.dir + S.DISCHARGE[e.type]) % 4;
+function drawChute(c, e, time) {
+  const [fw, fh] = fp(e.type, e.dir), sd = chuteSide(e), cx = (e.x + fw / 2) * T, cy = (e.y + fh / 2) * T;
+  const ex = cx + DX[sd] * fw * T / 2, ey = cy + DY[sd] * fh * T / 2;   // middle of the chute edge
+  const px = -DY[sd], py = DX[sd], L = 13, Wd = 9;
+  c.fillStyle = '#3c3a36'; c.strokeStyle = '#1c1a17'; c.lineWidth = 1.2;
+  c.beginPath(); c.moveTo(ex + px * Wd, ey + py * Wd); c.lineTo(ex + px * (Wd - 3) + DX[sd] * L, ey + py * (Wd - 3) + DY[sd] * L);
+  c.lineTo(ex - px * (Wd - 3) + DX[sd] * L, ey - py * (Wd - 3) + DY[sd] * L); c.lineTo(ex - px * Wd, ey - py * Wd); c.closePath(); c.fill(); c.stroke();
+  const flowing = e.dFlow > 0, col = MATCOL[e.type === 'crusher' ? (S.CRUSHED[e.mat] || 'bauxite') : 'bauxite'] || '#b0603a';
+  if (flowing) for (let k = 0; k < 4; k++) {
+    const f = ((time * 1.6 + k / 4) % 1), qx = ex + DX[sd] * (f * (L + 10)), qy = ey + DY[sd] * (f * (L + 10));
+    c.fillStyle = col; c.beginPath(); c.arc(qx + px * ((k % 3) - 1) * 3, qy + py * ((k % 3) - 1) * 3, 2.2, 0, 2 * PI); c.fill();
+  }
+  drawArrow(c, ex + DX[sd] * 6, ey + DY[sd] * 6, sd, 6, e.dSt === 'none' || e.dSt === 'refuses' ? 'rgba(255,150,120,.9)' : flowing ? 'rgba(160,240,140,.95)' : 'rgba(255,240,210,.8)');
+}
+// highlight the tiles where a chute delivers (when placing or hovering)
+function markChute(c, x, y, fw, fh, type, dir, label) {
+  const sd = (dir + S.DISCHARGE[type]) % 4, tl = sideTilesOf(x, y, fw, fh, sd);
+  const k = tl.map(([a, b]) => get(a, b)).find(o => o && !['road', 'pipe', 'ptg', 'feeder', 'belt', 'pole', 'wall'].includes(o.type));
+  const takes = k && (k.type === 'bin' || k.type === 'hopper' || (DEFS[k.type].ilim || {}).bauxite);
+  c.fillStyle = !k ? 'rgba(240,200,60,.28)' : takes ? 'rgba(100,220,100,.35)' : 'rgba(220,60,40,.35)';
+  for (const [a, b] of tl) c.fillRect(a * T + 2, b * T + 2, T - 4, T - 4);
+  const [mx2, my2] = tl[tl.length >> 1];
+  c.save(); c.translate((mx2 + .5) * T + DX[sd] * T * .2, (my2 + .5) * T + DY[sd] * T * .2); c.scale(1 / cam.z, 1 / cam.z);
+  stencil(c, label + (k ? (takes ? ' → ' + DEFS[k.type].n.toUpperCase() : ' ✕ ' + DEFS[k.type].n.toUpperCase()) : ''), 0, 4, 11, '#fff'); c.restore();
+}
+function chuteRow(e) {
+  const k = S.chuteTarget(e), side = ['north', 'east', 'south', 'west'][chuteSide(e)];
+  if (!k) return kv('Ore goes to', `nothing yet: put a ${e.type === 'crusher' ? 'wash plant, ball mill or load-out bin' : 'ball mill or load-out bin'} against the ▶ chute (${side} side)`, 'warn');
+  const name = DEFS[k.type].n;
+  return kv('Ore goes to', e.dSt === 'refuses' ? `${name} — it doesn't take this ore` : e.dSt === 'full' ? `${name} (full, waiting)` : `${name} ✓ via chute (${side} side)`, e.dSt === 'refuses' ? 'bad' : '');
 }
 function sideTilesOf(x, y, fw, fh, side) {
   const out = [];
