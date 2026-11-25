@@ -1250,9 +1250,14 @@ function excHeapPos(e, which) {
   const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T, fx = DX[e.dir], fy = DY[e.dir], lx = fy, ly = -fx;
   return which === 'pile' ? [cx + lx * 2.3 * T + fx * .7 * T, cy + ly * 2.3 * T + fy * .7 * T] : [cx - lx * 2.4 * T - fx * 1.2 * T, cy - ly * 2.4 * T - fy * 1.2 * T];
 }
-function drawExcHeaps(c, e) {
-  if (e.spoil > 2) { const [x, y] = excHeapPos(e, 'spoil'), r = 6 + Math.min(26, Math.sqrt(e.spoil) * 1.1); c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(x + 4, y + 5, r, r * .8, 0, 0, 2 * PI); c.fill(); heapFill(c, x, y, r, '#6e5a44'); }
-  if (e.pile > .5) { const [x, y] = excHeapPos(e, 'pile'), r = 5 + 19 * Math.sqrt(e.pile / S.EXC_PILE_CAP); c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(x + 4, y + 5, r, r * .8, 0, 0, 2 * PI); c.fill(); heapFill(c, x, y, r, MATCOL[e.pileMat] || '#888'); }
+function drawHeaps(c, x0, y0, x1, y1) {
+  for (const h of S.heaps) {
+    if (h.x < x0 - 3 || h.x > x1 + 3 || h.y < y0 - 3 || h.y > y1 + 3) continue;
+    const x = h.x * T, y = h.y * T, r = h.m === 'spoil' ? 6 + Math.min(26, Math.sqrt(h.t) * 1.1) : 5 + 19 * Math.sqrt(Math.min(1, h.t / S.EXC_PILE_CAP));
+    if (h.m === 'spoil' ? h.t <= 2 : h.t <= .5) continue;
+    c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(x + 4, y + 5, r, r * .8, 0, 0, 2 * PI); c.fill();
+    heapFill(c, x, y, r, h.m === 'spoil' ? '#6e5a44' : MATCOL[h.m] || '#888');
+  }
 }
 function drawExcavatorTop(c, e, dt) {
   const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T;
@@ -1521,6 +1526,7 @@ const cv = $('c'), c = cv.getContext('2d');
 let dpr = 1, vw = 0, vh = 0;
 function resize() { dpr = devicePixelRatio || 1; vw = innerWidth; vh = innerHeight; cv.width = vw * dpr; cv.height = vh * dpr; cv.style.width = vw + 'px'; cv.style.height = vh + 'px'; }
 addEventListener('resize', resize); resize();
+{ const bbEl = $('bb'), setBBH = () => document.documentElement.style.setProperty('--bbh', bbEl.offsetHeight + 'px'); if (window.ResizeObserver) new ResizeObserver(setBBH).observe(bbEl); setBBH(); }
 const cam = { x: S.SPAWN.x * T, y: S.SPAWN.y * T, z: 1.1 };
 const s2w = (sx, sy) => ({ x: (sx - vw / 2) / cam.z + cam.x, y: (sy - vh / 2) / cam.z + cam.y });
 
@@ -1633,7 +1639,7 @@ function startGame() {
     feed('Single-player. Progress autosaves in this browser.', 'sys');
     setInterval(() => { try { localStorage.setItem('rw-save', JSON.stringify(S.serialize())); } catch (e) {} }, 30000);
   }
-  setTimeout(() => feed('Press <kbd>H</kbd> for the process guide. Bug colonies are creeping in from the east.', 'sys', 9000), 800);
+  setTimeout(() => feed('Follow the objective at the top left: <b>📍 Show me</b> marks the spot, <b>▦ How?</b> opens the step-by-step diagram. <kbd>H</kbd> field manual · <kbd>B</kbd> diagrams.', 'sys', 12000), 800);
 }
 function showJoin(v, msg) { $('join').style.display = v ? 'flex' : 'none'; if (msg) $('joinStatus').textContent = msg; }
 
@@ -1850,7 +1856,7 @@ function driveInput() {
   if (!t && !e) { el.style.display = 'none'; return null; }
   el.style.display = 'block';
   el.innerHTML = t
-    ? `<b>Ural-6×6 haul truck</b> · ${esc(t.status)} · ${Math.round(Math.abs(t.v || 0) * 60 * 3.6 * 4)} km/h<br><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> steer · stop at a shovel's bay to be loaded · <kbd>F</kbd> tip into a hopper / load from a bin · <kbd>E</kbd> get out`
+    ? `<b>Ural-6×6 haul truck</b> · ${esc(t.status)} · ${Math.round(Math.abs(t.v || 0) * 60 * 3.6 * 4)} km/h<br><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> steer · stop beside an excavator and it loads you · <kbd>F</kbd> tip into a hopper / load from a bin · <kbd>E</kbd> get out`
     : `<b>Excavator</b> · ${esc(e.status)}${e.pile >= 1 ? ` · stockpile ${Math.round(e.pile)} t` : ''}<br><kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> turn (works standing still) · truck bay is in front · click ore within 3 tiles to dig there · <kbd>E</kbd> get out`;
   return t ? vehPos(t) : e.fx !== undefined ? [e.fx, e.fy] : [e.x + 1.5, e.y + 1.5];
 }
@@ -2083,33 +2089,115 @@ function updateHud() {
   if (S.tick < S.RAID_START) ac.push(['y', `⏳ Raids begin in ${Math.ceil((S.RAID_START - S.tick) / 3600)} min`]);
   if (hives.length) ac.push(['p', `☣ ${hives.length} hive${hives.length > 1 ? 's' : ''}`]);
   $('alerts').innerHTML = ac.map(([k, t]) => `<span class="al ${k}">${t}</span>`).join('');
-  const i = OBJ.findIndex(o => !o[1]());
-  $('objT').innerHTML = i < 0 ? '<span class="good">All objectives complete.</span>' : `<span class="dim">${i + 1}/${OBJ.length}</span> ${OBJ[i][0]}`;
+  const i = curObj(), o = OBJ[i];
+  const oh = i < 0 ? '<span class="good">All objectives complete.</span>'
+    : `<div class="ot"><span class="dim">${i + 1}/${OBJ.length}</span> ${o.t}</div><div class="ow dim">${o.why}</div>` +
+      `<div class="ob">${o.where ? `<button data-ob="show"${waypoint && waypoint.obj === i ? ' class="on"' : ''}>📍 Show me</button>` : ''}<button data-ob="how">▦ How?</button></div>`;
+  if (oh !== objHTML) { objHTML = oh; $('objT').innerHTML = oh; }
+  if (i !== lastObj) { if (lastObj >= 0 && i > lastObj) feed(`✓ Objective done: ${OBJ[lastObj].t}`, 'good', 5000); lastObj = i; }
 }
+let objHTML = '', lastObj = -1;
+$('objT').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-ob]'); if (!b) return;
+  const i = curObj(), o = OBJ[i]; if (!o) return;
+  if (b.dataset.ob === 'show') showMe(o.where, i);
+  else openStep(o.ch, o.st);
+  objHTML = '';
+});
 const fmtTime = s => `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`;
+// The tutorial: one objective at a time, each tied to a diagram step ('How?') and, where it helps, a spot in the world ('Show me').
+// where: 'bauxite' | 'coal' | 'limestone' | 'oil' | 'shore' | 'hive' | a building type (nearest one built)
 const OBJ = [
-  ['Lay a haul road <span class="dim">(Haulage tab)</span>', () => ents.some(e => e.type === 'road')],
-  ['Put up tripod sentries (cheap) or turrets before raids start', () => ents.some(e => (e.type === 'turret' || e.type === 'sentry') && (e.rounds > 0 || (e.inb.ammo || 0) > 0))],
-  ['Place an excavator at a bauxite face, arrow toward the road', () => ents.some(e => e.type === 'excavator')],
-  ['Put a haul truck on the road', () => trucks.length > 0],
-  ['Build a dump hopper and set it to Bauxite', () => ents.some(e => e.type === 'hopper' && e.mat === 'bauxite')],
-  ['Haul 300 t', () => (stats.hauled || 0) >= 300],
-  ['Requisition machinery kits at a supply depot into site stores', () => (stats.delivered.kit || 0) > 0],
-  ['Grind bauxite to slurry (hopper → feeder → ball mill)', () => (stats.fmade.slurry || 0) > 0],
-  ['Precipitate alumina hydrate', () => (stats.made.gibbsite || 0) >= 1],
-  ['Calcine alumina', () => (stats.fmade.alumina || 0) >= 100],
-  ['Tap molten aluminium from a reduction cell', () => (stats.made.crucible || 0) >= 1],
-  ['Cast 20 ingot bundles', () => (stats.made.ingot || 0) >= 20],
-  ['Press extrusions and cast concrete into site stores', () => (stats.delivered.alu || 0) > 0 && (stats.delivered.concrete || 0) > 0],
-  ['Strike oil and run the crude unit', () => (stats.fmade.kerosene || 0) > 0],
-  ['Produce RP-1 and liquid oxygen', () => (stats.fmade.rp1 || 0) > 0 && (stats.fmade.lox || 0) > 0],
-  ['Weld an Al-Li tank section', () => (stats.made.tank || 0) >= 1],
-  ['Pass an engine hot-fire test', () => (stats.made.engineok || 0) >= 1],
-  ['Integrate a launch vehicle in the VAB', () => (stats.made.rocket || 0) >= 1],
-  ['Launch at a bug colony', () => (stats.launches || 0) >= 1],
-  ['Destroy a hive', () => (stats.kills || 0) >= 1],
-  ['Eradicate every colony', () => hives.length === 0 && (stats.kills || 0) > 0],
+  { t: 'Lay out a pit over the bauxite near the landing site', why: 'Mining tab → Pit outline, then drag. Hover the ore first: it shows tonnes, hardness and the Al₂O₃ assay.', ok: () => S.pit.some(v => v), ch: 'Open-pit mine', st: 0, where: 'bauxite' },
+  { t: 'Lay a haul road past the pit', why: 'Haulage tab → Haul road. Roads are free; drag to lay them.', ok: () => ents.some(e => e.type === 'road'), ch: 'Open-pit mine', st: 1, where: 'bauxite' },
+  { t: 'Place an excavator at the face, its arrow on the road', why: 'The arrow marks the truck bay, 2 tiles out. It strips overburden even before any truck arrives.', ok: () => ents.some(e => e.type === 'excavator'), ch: 'Open-pit mine', st: 2, where: 'bauxite' },
+  { t: 'Build a primary crusher beside the road', why: 'Dug ore is run-of-mine lumps. Nothing else accepts it until it is crushed.', ok: () => ents.some(e => e.type === 'crusher'), ch: 'Open-pit mine', st: 5, where: 'excavator' },
+  { t: 'Put two haul trucks on the road', why: 'The dispatcher runs them shovel → crusher on its own.', ok: () => trucks.length >= 2, ch: 'Open-pit mine', st: 6, where: 'excavator' },
+  { t: 'Put up tripod sentries before the raids start', why: 'Defence tab. Cheap, unpowered, 60 rounds each. Ring the side of the base that faces the colonies.', ok: () => ents.some(e => (e.type === 'turret' || e.type === 'sentry') && (e.rounds > 0 || (e.inb.ammo || 0) > 0)), ch: 'Defence', st: 0, where: 'hive' },
+  { t: 'Crush 150 t of ore', why: 'Caprock digs at a crawl until blasted; be patient or move on to the drill rig.', ok: () => (stats.crushed || 0) >= 150, ch: 'Open-pit mine', st: 6, where: 'crusher' },
+  { t: 'Fire a blast: drill rig + ANFO from a supply depot', why: 'Hard rock digs ~7× faster once broken. One ANFO crate charges two holes.', ok: () => (stats.blasts || 0) >= 1, ch: 'Open-pit mine', st: 3, where: 'excavator' },
+  { t: 'Requisition machinery kits into site stores', why: 'Supply depot set to Machinery kits, inserter into a Site stores building.', ok: () => (stats.delivered.kit || 0) > 0, ch: 'Construction materials', st: 1 },
+  { t: 'Pump water and charge the caustic liquor circuit', why: 'Offshore pump on the shore; caustic make-up tank fed with caustic bags from a depot.', ok: () => (stats.fmade.liquor || 0) > 0, ch: 'Bayer refinery', st: 0, where: 'shore' },
+  { t: 'Grind crushed bauxite to slurry in a ball mill', why: 'Feeder from the crusher (or wash plant) straight into the mill; liquor pipe on its south side.', ok: () => (stats.fmade.slurry || 0) > 0, ch: 'Bayer refinery', st: 1, where: 'crusher' },
+  { t: 'Precipitate alumina hydrate', why: 'Digester → settler → precipitator. Follow the Bayer refinery diagram step by step.', ok: () => (stats.made.gibbsite || 0) >= 1, ch: 'Bayer refinery', st: 5, where: 'mill' },
+  { t: 'Calcine alumina', why: 'Hydrate by truck to a hopper, feeder into the calciner, plus coal.', ok: () => (stats.fmade.alumina || 0) >= 100, ch: 'Bayer refinery', st: 8, where: 'precipitator' },
+  { t: 'Tap molten aluminium from a reduction cell', why: 'Cells take power first and freeze for good if starved.', ok: () => (stats.made.crucible || 0) >= 1, ch: 'Smelter', st: 0, where: 'calciner' },
+  { t: 'Cast 20 ingot bundles', why: 'Inserter the crucibles from the cell into a casthouse.', ok: () => (stats.made.ingot || 0) >= 20, ch: 'Smelter', st: 5, where: 'pot' },
+  { t: 'Press extrusions and cast concrete into site stores', why: 'These pay for every building. Without them you run dry.', ok: () => (stats.delivered.alu || 0) > 0 && (stats.delivered.concrete || 0) > 0, ch: 'Construction materials', st: 3, where: 'casthouse' },
+  { t: 'Strike oil and run the crude unit', why: 'Oil well on a black seep, crude and steam into the distillation unit.', ok: () => (stats.fmade.kerosene || 0) > 0, ch: 'Oil & propellants', st: 0, where: 'oil' },
+  { t: 'Produce RP-1 and liquid oxygen', why: 'Reformer → hydrotreater for RP-1; the air separation unit makes LOX (6 MW).', ok: () => (stats.fmade.rp1 || 0) > 0 && (stats.fmade.lox || 0) > 0, ch: 'Oil & propellants', st: 4, where: 'distill' },
+  { t: 'Weld an Al-Li tank section', why: 'Ingots + lithium → slab → plate → tank.', ok: () => (stats.made.tank || 0) >= 1, ch: 'Rocket & launch', st: 0 },
+  { t: 'Pass an engine hot-fire test', why: 'Turbopump + chamber → engine → test stand with RP-1 and LOX.', ok: () => (stats.made.engineok || 0) >= 1, ch: 'Rocket & launch', st: 6 },
+  { t: 'Integrate a launch vehicle in the VAB', why: '4 tanks, 4 flight engines, 2 avionics kits and a payload.', ok: () => (stats.made.rocket || 0) >= 1, ch: 'Rocket & launch', st: 8 },
+  { t: 'Launch at a bug colony', why: 'Pad right beside the VAB, fuelled with RP-1 and LOX. Click the pad to pick a target.', ok: () => (stats.launches || 0) >= 1, ch: 'Rocket & launch', st: 10, where: 'hive' },
+  { t: 'Destroy a hive', why: 'The blast covers 5 tiles.', ok: () => (stats.kills || 0) >= 1, ch: 'Rocket & launch', st: 10, where: 'hive' },
+  { t: 'Eradicate every colony', why: 'Colonies bud new ones once their brood passes 7. Keep the pads busy.', ok: () => hives.length === 0 && (stats.kills || 0) > 0, ch: 'Rocket & launch', st: 10, where: 'hive' },
 ];
+const curObj = () => OBJ.findIndex(o => !o.ok());
+// ---- waypoints: a pulsing marker in the world, with an arrow at the screen edge when it is off screen
+let waypoint = null;
+function findWhere(w) {
+  let best = null, bd = 1e18;
+  const near = (x, y, lbl) => { const d = (x - me.x) * (x - me.x) + (y - me.y) * (y - me.y); if (d < bd) { bd = d; best = { x, y, label: lbl }; } };
+  if (w === 'bauxite' || w === 'coal' || w === 'limestone' || w === 'oil') {
+    for (const p of S.patches) {
+      if (p[0] !== w) continue;
+      const cx = Math.round(p[1]), cy = Math.round(p[2]), r = Math.ceil(p[3]); let left = 0;
+      for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (x >= 0 && y >= 0 && x < W && y < H && oreType[x + y * W] === w) left++;
+      if (left) near(p[1], p[2], (w === 'oil' ? 'Oil seep' : ITEMS[w].n + ' deposit'));
+    }
+  } else if (w === 'shore') {
+    for (let r = 1; r < 90 && !best; r++) for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) {
+      if (Math.max(Math.abs(i), Math.abs(j)) !== r) continue;
+      const x = Math.floor(me.x) + i, y = Math.floor(me.y) + j;
+      if (isWater(x, y) || x < 0 || y < 0 || x >= W || y >= H) continue;
+      if (isWater(x + 1, y) || isWater(x - 1, y) || isWater(x, y + 1) || isWater(x, y - 1)) near(x + .5, y + .5, 'Shoreline');
+    }
+  } else if (w === 'hive') { for (const h of hives) near(h.x + .5, h.y + .5, 'Bug colony'); }
+  else if (DEFS[w]) { for (const e of ents) if (e.type === w) { const [fw, fh] = fp(e.type, e.dir); near(e.x + fw / 2, e.y + fh / 2, DEFS[w].n); } }
+  return best;
+}
+// for a diagram step: the nearest one already built, or the resource it belongs on
+const TOOL_WHERE = { pit: 'bauxite', excavator: 'bauxite', drill: 'bauxite', oilwell: 'oil', pump: 'shore', crusher: 'excavator', washplant: 'crusher', tailings: 'washplant', mill: 'crusher', truck: 'road', grader: 'road' };
+function whereForTool(t) {
+  if (!t) return null;
+  if (DEFS[t] && !DEFS[t].tool && ents.some(e => e.type === t)) return t;
+  return TOOL_WHERE[t] || null;
+}
+function showMe(w, fromObj) {
+  const f = w && findWhere(w);
+  if (!f) { feed(w === 'hive' ? 'No colonies left.' : 'Nothing to point at yet.', 'warn', 2500); waypoint = null; return; }
+  if (waypoint && waypoint.x === f.x && waypoint.y === f.y) { waypoint = null; return; }   // click again to clear
+  waypoint = { ...f, obj: fromObj, t0: performance.now() };
+  const d = Math.round(Math.hypot(f.x - me.x, f.y - me.y));
+  feed(`📍 ${esc(f.label)} marked, ${d} tiles away.`, 'sys', 2500);
+}
+function drawWaypoint(c) {
+  if (!waypoint) return;
+  if (waypoint.obj !== undefined && waypoint.obj !== curObj()) { waypoint = null; return; }
+  const wx = waypoint.x * T, wy = waypoint.y * T, t = (performance.now() - waypoint.t0) / 1000;
+  const sx = (wx - cam.x) * cam.z + vw / 2, sy = (wy - cam.y) * cam.z + vh / 2, m = 46;
+  c.save(); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (sx > m && sy > m && sx < vw - m && sy < vh - m) {
+    for (let k = 0; k < 2; k++) { const ph = (t * .8 + k * .5) % 1; c.strokeStyle = `rgba(255,206,74,${.9 * (1 - ph)})`; c.lineWidth = 3; circle(c, sx, sy, 10 + ph * 60 * cam.z); c.stroke(); }
+    c.fillStyle = '#ffce4a'; c.beginPath(); c.moveTo(sx, sy - 6); c.lineTo(sx - 9, sy - 26 - Math.abs(Math.sin(t * 3)) * 6); c.lineTo(sx + 9, sy - 26 - Math.abs(Math.sin(t * 3)) * 6); c.closePath(); c.fill();
+    c.font = '600 12px system-ui, sans-serif'; c.textAlign = 'center'; c.lineWidth = 4; c.strokeStyle = 'rgba(10,8,4,.85)'; c.strokeText(waypoint.label, sx, sy - 40); c.fillStyle = '#ffe7a0'; c.fillText(waypoint.label, sx, sy - 40);
+  } else {
+    // keep the arrow clear of the HUD: objective panel on top, build bar at the bottom
+    const L = 40, R = vw - 40, Tp = Math.min(vh / 2 - 20, 230), B = Math.max(vh / 2 + 20, vh - 230), cx = vw / 2, cy = vh / 2;
+    const a = Math.atan2(sy - cy, sx - cx), ca = Math.cos(a), sa = Math.sin(a);
+    const k = Math.min(ca > 0 ? (R - cx) / ca : ca < 0 ? (L - cx) / ca : 1e9, sa > 0 ? (B - cy) / sa : sa < 0 ? (Tp - cy) / sa : 1e9), px = cx + ca * k, py = cy + sa * k;
+    c.translate(px, py); c.rotate(a);
+    c.fillStyle = 'rgba(10,8,4,.75)'; circle(c, 0, 0, 20); c.fill();
+    c.fillStyle = '#ffce4a'; c.beginPath(); c.moveTo(16, 0); c.lineTo(-6, -10); c.lineTo(-1, 0); c.lineTo(-6, 10); c.closePath(); c.fill();
+    c.rotate(-a);
+    const d = Math.round(Math.hypot(waypoint.x - me.x, waypoint.y - me.y));
+    c.font = '600 11px system-ui, sans-serif'; c.textAlign = 'center'; c.lineWidth = 4; c.strokeStyle = 'rgba(10,8,4,.85)';
+    const ly = py > vh / 2 ? -28 : 34;
+    c.strokeText(`${waypoint.label} · ${d} tiles`, 0, ly); c.fillStyle = '#ffe7a0'; c.fillText(`${waypoint.label} · ${d} tiles`, 0, ly);
+  }
+  c.restore();
+}
 // ---- inspector
 const bar = (f, col = '#f0a945') => `<div class="prog"><i style="width:${Math.max(0, Math.min(100, f * 100))}%;background:${col}"></i></div>`;
 const kv = (k, v, cls = '') => `<div class="row"><span>${k}</span><span class="v ${cls}">${v}</span></div>`;
@@ -2285,7 +2373,7 @@ function updateHover() {
   hv.innerHTML = txt; hv.style.display = 'block'; hv.style.left = (mx + 16) + 'px'; hv.style.top = (my + 18) + 'px';
 }
 // ---- minimap
-const mini = $('miniC'), mg = mini.getContext('2d'); mini.width = W; mini.height = H; mini.style.width = '260px'; mini.style.height = Math.round(260 * H / W) + 'px';
+const mini = $('miniC'), mg = mini.getContext('2d'); mini.width = W; mini.height = H; 
 const miniBase = mg.createImageData(W, H);
 function buildMiniBase() {
   const OC = { bauxite: [150, 60, 30], coal: [30, 30, 32], limestone: [200, 195, 180], oil: [10, 8, 6] };
@@ -2306,6 +2394,7 @@ function drawMini() {
   mg.fillStyle = '#ffd040'; for (const t of trucks) mg.fillRect(t.tile % W, t.tile / W | 0, 1, 1);
   for (const [id, o] of others) { const p = roster.get(id); mg.fillStyle = p ? p.col : '#fff'; mg.fillRect(o.x - 1, o.y - 1, 3, 3); }
   mg.fillStyle = me.col; mg.fillRect(me.x - 1.5, me.y - 1.5, 3, 3);
+  if (waypoint) { mg.strokeStyle = '#ffce4a'; mg.lineWidth = 1.5; mg.strokeRect(waypoint.x - 4, waypoint.y - 4, 8, 8); }
   const a = s2w(0, 0), b = s2w(vw, vh); mg.strokeStyle = 'rgba(255,255,255,.8)'; mg.lineWidth = 1; mg.strokeRect(a.x / T, a.y / T, (b.x - a.x) / T, (b.y - a.y) / T);
 }
 mini.addEventListener('mousedown', e => {
@@ -2324,7 +2413,7 @@ function renderGuide() {
 <h4>4 · Oil and propellants</h4><p><b>Oil well</b> on a black seep → crude → <b>crude distillation unit</b> (+ steam) → naphtha, kerosene and vacuum residue. Residue goes to the <b>delayed coker</b>, which makes pet coke for your anodes. Naphtha + steam → <b>reformer</b> → H₂. Kerosene + H₂ → <b>hydrotreater</b> → <b>RP-1</b>. The <b>air separation unit</b> (6 MW!) makes <b>LOX</b>.</p>
 <h4>5 · Rocketry</h4><p>Ingots + lithium → <b>Al-Li casting pit</b> → slab → <b>rolling mill</b> → plate → <b>friction-stir tank shop</b> → tank sections. Inconel → <b>turbomachinery cell</b> → turbopumps. Copper + Inconel → <b>thrust chamber shop</b>. Both → <b>engine assembly</b> → <b>test stand</b> (hot-fire with RP-1 + LOX; ~4 % fail). The <b>VAB</b> stacks 4 tanks, 4 flight engines, 2 avionics kits and an encapsulated payload. A <b>launch pad</b> beside it takes the rocket, loads ${S.PAD_RP1} RP-1 and ${S.PAD_LOX} LOX (LOX boils off — keep it topped up), then launches.</p>
 <h4>6 · Bug colonies</h4><p>After about 10 minutes, colonies on the far eastern edge send <b>raiding swarms</b> at your nearest buildings and chew them to rubble — nothing is refunded. Start with cheap <b>tripod sentries</b> (Defence tab): no power needed, 60 rounds included, but they fire slowly and reach only 6 tiles. Move up to <b>autocannon turrets</b> (9 tiles, rapid fire, 0.2 MW). Keep both fed with ammunition crates from a supply depot. Click a bug to shoot it yourself (12-tile range); if they swarm you, you are evacuated to base. Hives in the east spread infestation that shuts down whatever it touches and blocks trucks. They bud new hives as they grow. Each rocket hits a ${S.BLAST_R}-tile radius, and clears the infestation around it.</p>
-<h4>Objectives</h4>${OBJ.map(o => `<div class="obj${o[1]() ? ' done' : ''}"><span class="cb"></span><span>${o[0]}</span></div>`).join('')}</div>`;
+<h4>Objectives</h4>${OBJ.map(o => `<div class="obj${o.ok() ? ' done' : ''}"><span class="cb"></span><span>${o.t}</span></div>`).join('')}</div>`;
 }
 
 // =====================================================================
@@ -2333,15 +2422,6 @@ function renderGuide() {
 // node: [id, type | '@Label:sprite', col, row, label?]   edge: [from, to, material, mode]
 // modes: pipe (fluid), truck (bulk on haul trucks), feeder (apron feeder, bulk), ins (inserter / belt, unit loads), adj (adjacent), fly, dig
 const CHAINS = [
-  { name: 'Defence', blurb: 'Raids start about 10 minutes in. Get turrets up first.',
-    nodes: [['hive', '@Bug colony:hive', 0, 1], ['dep', 'depot', 1.5, 0, 'Supply depot (ammo)'], ['sen', 'sentry', 2, 1.9], ['tur', 'turret', 2, 1], ['base', '@Your buildings:store', 3, 1]],
-    edges: [['dep', 'tur', 'ammo', 'ins'], ['dep', 'sen', 'ammo', 'ins'], ['hive', 'tur', 'raiders', 'fly'], ['hive', 'sen', '', 'fly'], ['tur', 'base', 'covers 9 tiles', 'adj'], ['sen', 'base', '6 tiles', 'adj']],
-    steps: [
-      { t: 'Start cheap: ring the eastern side of the base with tripod sentries. They need no power and come with 60 rounds, but they fire slowly and reach only 6 tiles.', on: ['sen', 'base'], tool: 'sentry' },
-      { t: 'Upgrade the main approaches to autocannon turrets: 9 tiles, rapid fire, 0.2 MW.', on: ['tur', 'base'], tool: 'turret' },
-      { t: 'Supply depot set to Ammunition (20 crates/min), with an inserter into each sentry or turret. Belts can carry crates along a turret line.', on: ['dep', 'tur', 'sen'], tool: 'depot', done: () => ents.some(e => e.type === 'depot' && e.sel === 'ammo') },
-      { t: 'Raiders go for the nearest building to their colony. Click a bug to shoot it yourself (12 tiles). In the end, only rockets wipe out the colonies.', on: ['hive', 'tur'] },
-    ] },
   { name: 'Open-pit mine', blurb: 'Strip, drill, blast, dig, haul, crush, wash.',
     nodes: [['ore', '@Ore body:bauxite', 0, 1.2], ['pit', 'pit', 0, 0, 'Pit outline'], ['dep', 'depot', 1, 0, 'Depot (ANFO)'], ['drl', 'drill', 1, 1.2, 'Drill rig'], ['exc', 'excavator', 2, 1.2], ['road', 'road', 2.5, 0, 'Haul road'], ['grd', 'grader', 3.5, 0, 'Grader'],
       ['cru', 'crusher', 3, 1.2], ['fd1', 'feeder', 3.7, 2.2], ['wsh', 'washplant', 4.4, 1.2], ['dam', 'tailings', 4.4, 2.6, 'Tailings dam'], ['mill', 'mill', 5.6, 1.2]],
@@ -2361,6 +2441,15 @@ const CHAINS = [
       { t: 'Loaded trucks wear ruts into the road, which slow them and burn fuel. A grader shed sends a grader to cut the ruts out of roads within 28 tiles.', on: ['grd', 'road'], tool: 'grader' },
       { t: 'Where roads cross, a traffic signal lets trucks take turns instead of queueing for the box.', on: ['road'], tool: 'signal' },
     ] },
+  { name: 'Defence', blurb: 'Raids start about 10 minutes in. Get turrets up first.',
+    nodes: [['hive', '@Bug colony:hive', 0, 1], ['dep', 'depot', 1.5, 0, 'Supply depot (ammo)'], ['sen', 'sentry', 2, 1.9], ['tur', 'turret', 2, 1], ['base', '@Your buildings:store', 3, 1]],
+    edges: [['dep', 'tur', 'ammo', 'ins'], ['dep', 'sen', 'ammo', 'ins'], ['hive', 'tur', 'raiders', 'fly'], ['hive', 'sen', '', 'fly'], ['tur', 'base', 'covers 9 tiles', 'adj'], ['sen', 'base', '6 tiles', 'adj']],
+    steps: [
+      { t: 'Start cheap: ring the eastern side of the base with tripod sentries. They need no power and come with 60 rounds, but they fire slowly and reach only 6 tiles.', on: ['sen', 'base'], tool: 'sentry' },
+      { t: 'Upgrade the main approaches to autocannon turrets: 9 tiles, rapid fire, 0.2 MW.', on: ['tur', 'base'], tool: 'turret' },
+      { t: 'Supply depot set to Ammunition (20 crates/min), with an inserter into each sentry or turret. Belts can carry crates along a turret line.', on: ['dep', 'tur', 'sen'], tool: 'depot', done: () => ents.some(e => e.type === 'depot' && e.sel === 'ammo') },
+      { t: 'Raiders go for the nearest building to their colony. Click a bug to shoot it yourself (12 tiles). In the end, only rockets wipe out the colonies.', on: ['hive', 'tur'] },
+    ] },
   { name: 'Water & power', blurb: 'One pipe network = one fluid.',
     nodes: [['lake', '@Lake / river:water', 0, 1], ['pump', 'pump', 1, 1], ['coal', 'hopper', 1, 2.2, 'Coal hopper'], ['boil', 'boiler', 2, 0.4], ['plant', 'powerplant', 2, 2], ['sub', 'substation', 3, 2.6, 'Grid connection'], ['users', '@Digesters, CDU, reformer:digester', 3, 0.4]],
     edges: [['lake', 'pump', 'water', 'dig'], ['pump', 'boil', 'water', 'pipe'], ['pump', 'plant', 'water', 'pipe'], ['coal', 'boil', 'coal', 'feeder'], ['coal', 'plant', 'coal', 'feeder'], ['boil', 'users', 'steam', 'pipe']],
@@ -2371,15 +2460,25 @@ const CHAINS = [
       { t: 'Process steam boiler: coal by feeder from a coal hopper, water in on the south, steam out on the north.', on: ['coal', 'boil', 'users'], tool: 'boiler' },
       { t: '25 MW coal power station: coal by feeder, cooling water by pipe. The potline and the ASU are hungry.', on: ['coal', 'plant', 'pump'], tool: 'powerplant' },
     ] },
+  { name: 'Construction materials', blurb: 'Everything you build is paid in these.',
+    nodes: [['hopL', 'hopper', 0, 0, 'Limestone hopper'], ['ck', 'cementkiln', 1, 0], ['hopA', 'hopper', 1, 1.3, 'Limestone (aggregate)'], ['bat', 'batching', 2, 0.6], ['cast', 'casthouse', 0, 2.5, 'Casthouse (ingots)'], ['ext', 'extrusion', 1, 2.5], ['depK', 'depot', 2, 3.4, 'Depot (machinery kits)'], ['store', 'store', 3, 1.6]],
+    edges: [['hopL', 'ck', 'limestone + coal', 'feeder'], ['ck', 'bat', 'cement', 'ins'], ['hopA', 'bat', 'limestone', 'feeder'], ['bat', 'store', 'concrete', 'ins'], ['cast', 'ext', 'ingots', 'ins'], ['ext', 'store', 'extrusions', 'ins'], ['depK', 'store', 'kits', 'ins']],
+    steps: [
+      { t: 'Site stores: anything inserted joins the team stockpile that pays for building.', on: ['store'], tool: 'store' },
+      { t: 'Set a supply depot to Machinery kits and run an inserter into the stores. That\'s 4 kits/min, shared between depots.', on: ['depK', 'store'], tool: 'depot', done: () => ents.some(e => e.type === 'depot' && e.sel === 'kit') },
+      { t: 'Cement kiln: limestone and coal by feeders. Cement bags leave by inserter.', on: ['hopL', 'ck'], tool: 'cementkiln' },
+      { t: 'Batching plant: cement by inserter, limestone aggregate by feeder, water by pipe (south). Precast panels go by inserter into the stores.', on: ['ck', 'hopA', 'bat', 'store'], tool: 'batching' },
+      { t: 'Extrusion press: ingots in by inserter, extrusions out by inserter into the stores.', on: ['cast', 'ext', 'store'], tool: 'extrusion' },
+    ] },
   { name: 'Bayer refinery', blurb: 'Bauxite → alumina hydrate → alumina.',
-    nodes: [['depC', 'depot', 0, 0, 'Depot (caustic)'], ['dis', 'dissolver', 1, 0], ['hopB', 'hopper', 0, 1.3, 'Bauxite hopper'], ['mill', 'mill', 1, 1.3], ['boil', 'boiler', 2, 0], ['kiln', 'limekiln', 1, 2.6], ['dig', 'digester', 2, 1.3], ['depF', 'depot', 3, 2.6, 'Depot (flocculant)'],
+    nodes: [['depC', 'depot', 0, 0, 'Depot (caustic)'], ['dis', 'dissolver', 1, 0], ['hopB', 'crusher', 0, 1.3, 'Crusher / wash plant'], ['mill', 'mill', 1, 1.3], ['boil', 'boiler', 2, 0], ['kiln', 'limekiln', 1, 2.6], ['dig', 'digester', 2, 1.3], ['depF', 'depot', 3, 2.6, 'Depot (flocculant)'],
       ['cla', 'clarifier', 3, 1.3], ['pre', 'precipitator', 4, 0.5], ['was', 'washer', 4, 2.1], ['binH', 'bin', 5, 0.5, 'Hydrate bin'], ['binM', 'bin', 5, 2.1, 'Red mud bin'], ['calc', 'calciner', 6, 0.5], ['res', 'residue', 6, 2.1]],
     edges: [['depC', 'dis', 'caustic', 'ins'], ['dis', 'mill', 'liquor', 'pipe'], ['hopB', 'mill', 'bauxite', 'feeder'], ['mill', 'dig', 'slurry', 'pipe'], ['boil', 'dig', 'steam', 'pipe'], ['kiln', 'dig', 'quicklime', 'ins'],
       ['dig', 'cla', 'digested', 'pipe'], ['depF', 'cla', 'flocculant', 'ins'], ['cla', 'pre', 'pregnant', 'pipe'], ['cla', 'was', 'mudslurry', 'pipe'], ['pre', 'mill', 'liquor', 'pipe'], ['pre', 'binH', 'gibbsite', 'feeder'],
       ['was', 'binM', 'redmud', 'feeder'], ['binH', 'calc', 'gibbsite', 'truck'], ['binM', 'res', 'redmud', 'truck']],
     steps: [
-      { t: 'Set a supply depot to Caustic soda and run an inserter into the caustic make-up tank. Pipe water in. This charges the liquor circuit.', on: ['depC', 'dis'], tool: 'dissolver' },
-      { t: 'Ball mill: liquor in on the south, slurry out on the north, bauxite by feeder from the hopper.', on: ['dis', 'hopB', 'mill'], tool: 'mill' },
+      { t: 'Set a supply depot to Caustic soda and run an inserter into the caustic make-up tank. Pipe water in from an offshore pump. This charges the liquor circuit.', on: ['depC', 'dis'], tool: 'dissolver', where: 'shore' },
+      { t: 'Ball mill: liquor in on the south, slurry out on the north, crushed bauxite by feeder straight from the crusher or wash plant. (Far from the mine? Load-out bin → trucks → a hopper set to Bauxite → feeder.)', on: ['dis', 'hopB', 'mill'], tool: 'mill' },
       { t: 'Lime kiln: limestone and coal by feeders. Inserter its quicklime bags into the digester.', on: ['kiln', 'dig'], tool: 'limekiln' },
       { t: 'Digester: slurry and steam pipes in on the south, digested slurry out on the north.', on: ['mill', 'boil', 'dig'], tool: 'digester' },
       { t: 'Settler: digested slurry in on the south, pregnant liquor out on the north, mud underflow out on the east. Flocculant drums by inserter from a depot.', on: ['dig', 'cla', 'depF'], tool: 'clarifier' },
@@ -2398,16 +2497,6 @@ const CHAINS = [
       { t: 'Anode paste plant: coke by feeder, pitch drums by inserter, plus spent butts returned from the cells.', on: ['hopK', 'depP', 'paste', 'pot'], tool: 'paste' },
       { t: 'Baking furnace: green anodes in by inserter, coal by feeder. Inserters put the baked anodes into the cells.', on: ['paste', 'bake', 'pot'], tool: 'bake' },
       { t: 'Inserter the crucibles from the cell into the casthouse, which casts ingots.', on: ['pot', 'cast', 'out'], tool: 'casthouse' },
-    ] },
-  { name: 'Construction materials', blurb: 'Everything you build is paid in these.',
-    nodes: [['hopL', 'hopper', 0, 0, 'Limestone hopper'], ['ck', 'cementkiln', 1, 0], ['hopA', 'hopper', 1, 1.3, 'Limestone (aggregate)'], ['bat', 'batching', 2, 0.6], ['cast', 'casthouse', 0, 2.5, 'Casthouse (ingots)'], ['ext', 'extrusion', 1, 2.5], ['depK', 'depot', 2, 3.4, 'Depot (machinery kits)'], ['store', 'store', 3, 1.6]],
-    edges: [['hopL', 'ck', 'limestone + coal', 'feeder'], ['ck', 'bat', 'cement', 'ins'], ['hopA', 'bat', 'limestone', 'feeder'], ['bat', 'store', 'concrete', 'ins'], ['cast', 'ext', 'ingots', 'ins'], ['ext', 'store', 'extrusions', 'ins'], ['depK', 'store', 'kits', 'ins']],
-    steps: [
-      { t: 'Site stores: anything inserted joins the team stockpile that pays for building.', on: ['store'], tool: 'store' },
-      { t: 'Set a supply depot to Machinery kits and run an inserter into the stores. That\'s 4 kits/min, shared between depots.', on: ['depK', 'store'], tool: 'depot', done: () => ents.some(e => e.type === 'depot' && e.sel === 'kit') },
-      { t: 'Cement kiln: limestone and coal by feeders. Cement bags leave by inserter.', on: ['hopL', 'ck'], tool: 'cementkiln' },
-      { t: 'Batching plant: cement by inserter, limestone aggregate by feeder, water by pipe (south). Precast panels go by inserter into the stores.', on: ['ck', 'hopA', 'bat', 'store'], tool: 'batching' },
-      { t: 'Extrusion press: ingots in by inserter, extrusions out by inserter into the stores.', on: ['cast', 'ext', 'store'], tool: 'extrusion' },
     ] },
   { name: 'Oil & propellants', blurb: 'RP-1 kerosene and liquid oxygen.',
     nodes: [['well', 'oilwell', 0, 1], ['boil', 'boiler', 0, 2.6], ['cdu', 'distill', 1, 1], ['cok', 'coker', 2, 2.2], ['binK', 'bin', 3, 2.8, 'Coke bin → anode plant'], ['ref', 'reformer', 2, 0], ['hyd', 'hydrotreater', 3, 0.8], ['asu', 'asu', 3, 3.9], ['ts', 'teststand', 4.2, 1.5], ['pad', 'pad', 4.2, 3.2]],
@@ -2445,7 +2534,19 @@ const MODE = {
   pipe: { w: 4, dash: '' }, truck: { col: '#d9a22b', w: 3, dash: '9 5' }, feeder: { col: '#f08a24', w: 3, dash: '2 4' },
   ins: { col: '#cfc7b8', w: 2, dash: '' }, adj: { col: '#8a9aa6', w: 1.5, dash: '4 4' }, fly: { col: '#ff6a50', w: 2, dash: '10 6' }, dig: { col: '#a8502a', w: 3, dash: '' },
 };
-const bp = { open: false, chain: 0, step: 0, pinned: false };
+const bp = { open: false, chain: 0, step: 0, pinned: false, opened: false };
+function firstOpenStep(ch) { const k = ch.steps.findIndex(st => !stepDone(st)); return k < 0 ? 0 : k; }
+function openStep(name, st) { const k = CHAINS.findIndex(c2 => c2.name === name); if (k >= 0) { bp.chain = k; bp.step = Math.min(st || 0, CHAINS[k].steps.length - 1); } bp.opened = true; toggleBP(true); }
+// live state of every building of one type: how many, and the worst status among them
+const PASSIVE = new Set(['road', 'pipe', 'ptg', 'belt', 'chest', 'wall', 'pole', 'gate', 'lamp']);
+function nodeState(t) {
+  const es = ents.filter(e => e.type === t); if (!es.length) return null;
+  if (PASSIVE.has(t)) return { n: es.length, worst: 'good', msg: '', tally: [] };
+  const cls = es.map(e => statusCls(e.status)), bad = cls.filter(k => k === 'bad').length, warn = cls.filter(k => k === 'warn').length;
+  const worst = bad ? 'bad' : warn ? 'warn' : 'good', ex = es[cls.indexOf(worst)];
+  const tally = {}; for (const e of es) tally[e.status] = (tally[e.status] || 0) + 1;
+  return { n: es.length, worst, msg: ex && ex.status, tally: Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 4) };
+}
 const iconURL = {};
 function nodeIcon(n) {
   const t = n[1];
@@ -2475,9 +2576,10 @@ function portHint(type) {
 }
 function renderBP() {
   const ch = CHAINS[bp.chain], st = ch.steps[bp.step], on = new Set(st.on || []);
-  $('bpSide').innerHTML = CHAINS.map((c2, i) => { const dn = c2.steps.filter(stepDone).length; return `<div class="bpc${i === bp.chain ? ' on' : ''}" data-ch="${i}"><b>${c2.name}</b><span class="dim">${dn}/${c2.steps.length}</span><div class="dim">${c2.blurb}</div></div>`; }).join('') +
+  const co = OBJ[curObj()];
+  $('bpSide').innerHTML = CHAINS.map((c2, i) => { const dn = c2.steps.filter(stepDone).length, all = dn === c2.steps.length; return `<div class="bpc${i === bp.chain ? ' on' : ''}" data-ch="${i}"><b>${c2.name}</b><span class="${all ? 'good' : 'dim'}">${all ? '✓' : dn + '/' + c2.steps.length}</span>${co && co.ch === c2.name ? '<span class="now">current objective</span>' : ''}<div class="dim">${c2.blurb}</div></div>`; }).join('') +
     `<div class="legend"><b>Legend</b>${[['pipe', 'pipe (fluid colour)'], ['truck', 'haul truck (bulk)'], ['feeder', 'apron feeder (bulk)'], ['ins', 'inserter / belt (units)'], ['adj', 'placed beside'], ['fly', 'flight / raid']].map(([m, l]) => `<div><svg width="34" height="8"><line x1="1" y1="4" x2="33" y2="4" stroke="${MODE[m].col || '#7fb0d8'}" stroke-width="${MODE[m].w}" stroke-dasharray="${MODE[m].dash}"/></svg>${l}</div>`).join('')}</div>`;
-  const CW = 178, RH = 96, NW = 144, NH = 60, P0 = 16;
+  const CW = 178, RH = 104, NW = 144, NH = 60, P0 = 18;
   const pos = {}; let mxX = 0, mxY = 0;
   for (const n of ch.nodes) { const x = P0 + n[2] * CW, y = P0 + n[3] * RH; pos[n[0]] = [x, y]; mxX = Math.max(mxX, x + NW); mxY = Math.max(mxY, y + NH); }
   let svg = `<svg viewBox="0 0 ${mxX + P0} ${mxY + P0 + 6}" width="${mxX + P0}" height="${mxY + P0 + 6}" style="min-width:${Math.round((mxX + P0) * .7)}px">`;
@@ -2495,21 +2597,27 @@ function renderBP() {
     if (mat) {
       const t = .5, mx2 = (1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * c1[0] + 3 * (1 - t) * t * t * c2[0] + t ** 3 * x2, my2 = (1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * c1[1] + 3 * (1 - t) * t * t * c2[1] + t ** 3 * y2;
       const label = FLUIDS[mat] ? FLUIDS[mat].n : ITEMS[mat] ? ITEMS[mat].n : mat;
-      svg += `<text x="${mx2}" y="${my2 - 4}" text-anchor="middle" class="el" opacity="${op}">${esc(label)}</text>`;
+      const lw2 = label.length * 5.6 + 10;
+      svg += `<rect x="${mx2 - lw2 / 2}" y="${my2 - 15}" width="${lw2}" height="14" rx="7" fill="#1d2024" stroke="${col}" stroke-opacity=".55" opacity="${op}"/><text x="${mx2}" y="${my2 - 4.5}" text-anchor="middle" class="el" opacity="${op}">${esc(label)}</text>`;
     }
   }
   for (const n of ch.nodes) {
     const [x, y] = pos[n[0]], act = on.has(n[0]), op = on.size ? (act ? 1 : .35) : 1, ic = nodeIcon(n), isB = DEFS[n[1]] && n[1][0] !== '@';
-    const built = isB && ents.some(e => e.type === n[1]);
+    const ns = isB ? nodeState(n[1]) : null;
     const rec = isB && DEFS[n[1]].recipes ? DEFS[n[1]].recipes.map(r => fmtRecipe(r).replace(/<[^>]+>/g, '')).join('\n') : '';
-    svg += `<g class="bpn${isB ? ' bld' : ''}" data-t="${isB ? n[1] : ''}" opacity="${op}"><title>${esc(nodeName(n))}${rec ? '\n' + esc(rec) : ''}${isB ? '\nClick to build' : ''}</title>`;
+    const live = ns ? '\n' + ns.tally.map(([k, v]) => `${v} × ${k}`).join('\n') : isB ? '\nNone built yet' : '';
+    svg += `<g class="bpn${isB ? ' bld' : ''}" data-t="${isB ? n[1] : ''}" opacity="${op}"><title>${esc(nodeName(n))}${esc(live)}${rec ? '\n' + esc(rec) : ''}${isB ? '\nClick for its step' : ''}</title>`;
     svg += `<rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="9" fill="${act ? 'rgba(240,169,69,.16)' : 'rgba(255,255,255,.05)'}" stroke="${act ? '#f0a945' : 'rgba(255,255,255,.18)'}" stroke-width="${act ? 2 : 1}"/>`;
     if (ic) svg += `<image href="${ic}" x="${x + 6}" y="${y + 10}" width="40" height="40"/>`;
     else svg += `<circle cx="${x + 26}" cy="${y + 30}" r="15" fill="${n[1].endsWith('hive') ? '#5a2a44' : '#2a5a7a'}" stroke="${n[1].endsWith('hive') ? '#c86ad8' : '#7fb0d8'}"/>`;
     const words = nodeName(n).split(' '), lines = [''];
     for (const w2 of words) { if ((lines[lines.length - 1] + ' ' + w2).trim().length > 15 && lines[lines.length - 1]) lines.push(w2); else lines[lines.length - 1] = (lines[lines.length - 1] + ' ' + w2).trim(); }
     lines.slice(0, 3).forEach((l, i) => { svg += `<text x="${x + 52}" y="${y + NH / 2 - (Math.min(3, lines.length) - 1) * 6.5 + i * 13 + 4}" class="nl">${esc(l)}</text>`; });
-    if (built) svg += `<circle cx="${x + NW - 9}" cy="${y + 9}" r="6" fill="#62c25a"/><path d="M${x + NW - 12},${y + 9} l2.5,2.5 l4.5,-5" stroke="#10200c" stroke-width="1.8" fill="none"/>`;
+    if (ns) {
+      const col = ns.worst === 'good' ? '#62c25a' : ns.worst === 'warn' ? '#f2b431' : '#e2483a', lbl = '×' + ns.n, bw = 10 + lbl.length * 6.5;
+      svg += `<rect x="${x + NW - bw - 4}" y="${y - 7}" width="${bw}" height="15" rx="7.5" fill="${col}"/><text x="${x + NW - 4 - bw / 2}" y="${y + 4}" text-anchor="middle" class="nb">${lbl}</text>`;
+      if (ns.worst !== 'good' && ns.msg) { const m2 = ns.msg.length > 24 ? ns.msg.slice(0, 23) + '…' : ns.msg; svg += `<text x="${x + NW / 2}" y="${y + NH + 12}" text-anchor="middle" class="ns ${ns.worst}">${esc(m2)}</text>`; }
+    }
     svg += '</g>';
   }
   $('bpSvg').innerHTML = svg + '</svg>';
@@ -2518,33 +2626,38 @@ function renderBP() {
 function stepCard(full) {
   const ch = CHAINS[bp.chain], st = ch.steps[bp.step], dn = stepDone(st);
   const d = st.tool && DEFS[st.tool];
-  return `<div class="bph"><span class="dim">${esc(ch.name)} · step ${bp.step + 1} of ${ch.steps.length}</span>${dn ? '<span class="good">✓ done</span>' : ''}</div>
+  const wh = st.where || whereForTool(st.tool);
+  const strip = full ? `<div class="bps">${ch.steps.map((s2, k) => `<span class="${k === bp.step ? 'cur ' : ''}${stepDone(s2) ? 'ok' : ''}" data-bp="go:${k}" title="${esc(s2.t)}">${stepDone(s2) ? '✓' : k + 1}</span>`).join('')}</div>` : '';
+  return `${strip}<div class="bph"><span class="dim">${esc(ch.name)} · step ${bp.step + 1} of ${ch.steps.length}</span>${dn ? '<span class="good">✓ done</span>' : ''}</div>
     <div class="bpt">${esc(st.t)}</div>
     ${full && d ? (d.recipes ? d.recipes.map(r => `<div class="rcp">${fmtRecipe(r)}</div>`).join('') : '') + portHint(st.tool) : ''}
     <div class="bpb"><button data-bp="prev" ${bp.step === 0 ? 'disabled' : ''}>◀ Prev</button><button data-bp="next" ${bp.step === ch.steps.length - 1 ? 'disabled' : ''}>Next ▶</button>
     ${d ? `<button data-bp="build" class="pri">Build ${esc(d.n)} <span class="dim">${costTxt(st.tool)}</span></button>` : ''}
+    ${wh ? `<button data-bp="show">📍 ${DEFS[wh] && ents.some(e => e.type === wh) && wh === st.tool ? 'Find it' : 'Show me where'}</button>` : ''}
     ${full ? '' : '<button data-bp="open">▦ Diagram</button><button data-bp="unpin">✕</button>'}</div>`;
 }
 function renderPin() { const el = $('bpCard'); if (!bp.pinned || bp.open) { el.style.display = 'none'; return; } el.style.display = 'block'; el.innerHTML = stepCard(false); }
-function toggleBP(v) { bp.open = v === undefined ? !bp.open : v; $('bp').classList.toggle('on', bp.open); if (bp.open) renderBP(); renderPin(); }
+function toggleBP(v) { bp.open = v === undefined ? !bp.open : v; if (bp.open && !bp.opened) { bp.opened = true; const o = OBJ[curObj()]; if (o) { const k = CHAINS.findIndex(c2 => c2.name === o.ch); if (k >= 0) { bp.chain = k; bp.step = o.st; } } } $('bp').classList.toggle('on', bp.open); if (bp.open) renderBP(); renderPin(); }
 function bpAction(a) {
   const ch = CHAINS[bp.chain], st = ch.steps[bp.step];
   if (a === 'prev') bp.step = Math.max(0, bp.step - 1);
   else if (a === 'next') bp.step = Math.min(ch.steps.length - 1, bp.step + 1);
   else if (a === 'build' && st.tool) { const gi = GROUPS.findIndex(g => g[1].includes(st.tool)); if (gi >= 0) cat = gi; setTool(st.tool); bp.pinned = true; toggleBP(false); return; }
   else if (a === 'open') { toggleBP(true); return; }
+  else if (a === 'show') { showMe(st.where || whereForTool(st.tool)); if (bp.open) toggleBP(false); bp.pinned = true; renderPin(); return; }
+  else if (a.startsWith('go:')) bp.step = Math.max(0, Math.min(ch.steps.length - 1, +a.slice(3)));
   else if (a === 'unpin') { bp.pinned = false; }
   if (bp.open) renderBP(); renderPin();
 }
 $('bp').addEventListener('click', ev => {
-  const c2 = ev.target.closest('[data-ch]'); if (c2) { bp.chain = +c2.dataset.ch; bp.step = 0; renderBP(); return; }
+  const c2 = ev.target.closest('[data-ch]'); if (c2) { bp.chain = +c2.dataset.ch; bp.step = firstOpenStep(CHAINS[bp.chain]); renderBP(); return; }
   const b = ev.target.closest('[data-bp]'); if (b) { bpAction(b.dataset.bp); return; }
   const n = ev.target.closest('.bpn.bld'); if (n && n.dataset.t) { const ch = CHAINS[bp.chain], i = ch.steps.findIndex(s => s.tool === n.dataset.t); if (i >= 0) { bp.step = i; renderBP(); } else { const gi = GROUPS.findIndex(g => g[1].includes(n.dataset.t)); if (gi >= 0) cat = gi; setTool(n.dataset.t); toggleBP(false); } return; }
   if (ev.target.classList.contains('x')) toggleBP(false);
 });
 $('bpCard').addEventListener('click', ev => { const b = ev.target.closest('[data-bp]'); if (b) bpAction(b.dataset.bp); });
 $('bpBtn').onclick = () => toggleBP();
-setInterval(() => { if (bp.pinned && !bp.open) renderPin(); }, 1000);
+setInterval(() => { if (bp.pinned && !bp.open) renderPin(); if (bp.open && !document.querySelector('#bp:hover .bpn:hover')) renderBP(); }, 1500);
 
 // =====================================================================
 //  render
@@ -2612,11 +2725,11 @@ function render(dt, frac) {
     c.drawImage(SPR[it.type], it.rx - 9, it.ry - 9, 18, 18);
   }
   for (const r of vis) if (r.type === 'road' && r.sig) drawSignal(c, r);
+  drawHeaps(c, x0, y0, x1, y1);
   for (const t of trucks) { const tx = t.tile % W, ty = t.tile / W | 0; if (tx >= x0 - 2 && tx <= x1 + 2 && ty >= y0 - 2 && ty <= y1 + 2) drawTruck(c, t, dt); else t._x = undefined; }
   const bld = vis.filter(e => !BIG.has(e.type)).sort((p, q) => (p.y + fp(p.type, p.dir)[1]) - (q.y + fp(q.type, q.dir)[1]));
   for (const e of bld) {
     if (e.type === 'excavator') {
-      drawExcHeaps(c, e);
       c.save(); excXform(c, e); drawMachine(c, e); drawExcavatorTop(c, e, dt); c.restore();
     } else if (e.type === 'inserter') drawInserterBase(c, e); else drawMachine(c, e);
     if (e.type === 'pad' && e.rocket) drawRocketStanding(c, e);
@@ -2706,6 +2819,7 @@ function render(dt, frac) {
   }
   if (sel && sel.kind === 'ent') { const e = get(sel.x, sel.y); if (e) { const [fw, fh] = fp(e.type, e.dir); brackets(c, e.x * T - 2, e.y * T - 2, fw * T + 4, fh * T + 4, '#7fd4ff'); } }
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawWaypoint(c);
   const vg = c.createRadialGradient(vw / 2, vh / 2, Math.min(vw, vh) * .4, vw / 2, vh / 2, Math.max(vw, vh) * .8);
   vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(10,6,2,.35)');
   c.fillStyle = vg; c.fillRect(0, 0, vw, vh);

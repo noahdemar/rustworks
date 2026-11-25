@@ -415,6 +415,7 @@ let nextBug = 1;
 const cells = new Array(W * H).fill(null);
 const ents = [];
 const trucks = [];
+const heaps = [];   // loose ore stockpiles and spoil heaps on the ground: { x, y (tile units), m ('spoil' or an ore), t, ga, gs }
 let nets = [];
 let tick = 0, rs = 1234567, satP = 1, satO = 1, nextTruck = 1;
 const stores = { ...START_STORES };
@@ -1063,7 +1064,7 @@ function updManual(t) {
       }
     } else {   // load from a bin or depot stockpile beside the truck
       const s2 = ents.find(s2 => (s2.type === 'bin' || (s2.type === 'depot' && BULK.has(s2.sel))) && nearRect(t.mx, t.my, s2, 1.7) && s2.stock >= 1);
-      if (!s2) { t.status = 'Nothing to load here (park beside a bin, or at a shovel\'s bay)'; t.act = false; }
+      if (!s2) { t.act = false; t.status = ents.some(x => x.type === 'excavator' && nearRect(t.mx, t.my, x, EXC_SIDE)) ? 'At the shovel — stay stopped and it loads you' : 'Nothing to load here (stop beside an excavator, bin or depot)'; }
       else {
         const m = s2.type === 'bin' ? s2.mat : s2.sel;
         if (t.load > 0 && t.mat !== m) { t.status = 'Truck carries a different load'; t.act = false; }
@@ -1077,7 +1078,9 @@ function updManual(t) {
     }
   } else if (t.act && Math.abs(t.v) >= .01) t.act = false;
   t.tip = t.tipping ? Math.min(1, (t.tip || 0) + .05) : Math.max(0, (t.tip || 0) - .04);
-  if (!t.act && !t.tipping && t.drv) t.status = t.load > 0 ? `Hand-driven · ${Math.round(t.load)} t ${ITEMS[t.mat].n}` : 'Hand-driven · empty';
+  if (t.shovel > 0) t.shovel--;
+  if (t.shovel > 0 && !t.tipping) t.status = `Being loaded by shovel · ${Math.round(t.load)} / ${Math.round(capOf(t.mat || 'rom'))} t`;
+  else if (!t.act && !t.tipping && t.drv) t.status = t.load > 0 ? `Hand-driven · ${Math.round(t.load)} t ${ITEMS[t.mat].n}` : 'Hand-driven · empty';
 }
 function releaseAll() { for (const t of trucks) if (t.drv) exitVehicle(t.drv); for (const e of ents) if (e.drv) exitVehicle(e.drv); }
 
@@ -1162,27 +1165,51 @@ function updExcDrive(e) {
   e.status = e.v !== 0 ? 'Driving' : 'Turning on the spot';
   return true;
 }
+// where the excavator casts: stockpile ahead-left, spoil behind-right (tile units, relative to which way it faces)
+function heapPos(e, which) {
+  const cx = e.x + 1.5, cy = e.y + 1.5, fx = DX[e.dir], fy = DY[e.dir], lx = fy, ly = -fx;
+  return which === 'pile' ? [cx + lx * 2.3 + fx * .7, cy + ly * 2.3 + fy * .7] : [cx - lx * 2.4 - fx * 1.2, cy - ly * 2.4 - fy * 1.2];
+}
+const HEAP_MERGE = 1.5, HEAP_REACH = 3.2;
+function heapNear(x, y, spoil) {   // the heap of that kind within merging distance of (x, y)
+  let best = null, bd = HEAP_MERGE * HEAP_MERGE;
+  for (const h of heaps) if ((h.m === 'spoil') === spoil) { const d = (h.x - x) * (h.x - x) + (h.y - y) * (h.y - y); if (d < bd) { bd = d; best = h; } }
+  return best;
+}
+function castHeap(e, which, m) {   // the heap this excavator casts onto now, created on first bucket
+  const [x, y] = heapPos(e, which);
+  return heapNear(x, y, which === 'spoil') || (m ? (heaps.push({ x, y, m, t: 0 }), heaps[heaps.length - 1]) : null);
+}
+function oreHeapFor(e) {   // an ore stockpile within the bucket's reach: the one at its casting spot first
+  const [x, y] = heapPos(e, 'pile'), own = heapNear(x, y, false);
+  if (own && own.t >= 1) return own;
+  return heaps.find(h => h.m !== 'spoil' && h.t >= 1 && nearRect(h.x, h.y, e, HEAP_REACH)) || own;
+}
+function dropEmptyHeaps() { for (let k = heaps.length - 1; k >= 0; k--) if (heaps[k].t < 1e-6) heaps.splice(k, 1); }
+const EXC_SIDE = 2.2;      // a hand-driven truck stopped this close to the excavator's footprint gets loaded
 const EXC_PILE_CAP = 150;   // t of loose ore it will cast onto a stockpile beside itself while no truck is at the bay
 function updExcavator(e) {
   if (updExcDrive(e)) return;
   if (e.pref >= 0 && e.pref !== e.dig && isOre(e.pref) && !cells[e.pref] && excTiles(e.x, e.y).includes(e.pref)) e.dig = e.pref;
   if (e.dig < 0 || !isOre(e.dig) || cells[e.dig]) e.dig = pickDig(e);
-  const face = e.dig >= 0 ? ROM_OF[oreType[e.dig]] : null, pile = e.pile || 0;
+  const face = e.dig >= 0 ? ROM_OF[oreType[e.dig]] : null, hp = oreHeapFor(e), pile = hp ? hp.t : 0;
+  e.pile = pile; e.pileMat = pile >= 1 ? hp.m : null;   // mirrored for the inspector
   e.mat = pile >= 1 ? e.pileMat : face;   // what the next truck will get
   const bay = bays(e)[0];
   const [bx, by] = excBay(e);
   const room = t => capOf(t.load > 0 ? t.mat : (pile >= 1 ? e.pileMat : face)) - t.load;
-  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.69 && room(t) >= 1 && !t.full
+  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && ((t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.69 || nearRect(t.mx, t.my, e, EXC_SIDE)) && room(t) >= 1 && !t.full && !t.tipping
     : bay !== undefined && t.tile === bay && t.next < 0 && t.state === 'loading' && t.job && t.job.src === e);
   if (!tr) e.passes = 0;
+  if (tr && tr.man) tr.shovel = 90;
   // a truck at the bay: rehandle the stockpile first (broken material loads in full buckets)
   if (tr && pile >= 1) {
     if (tr.load > 0 && tr.mat !== e.pileMat) { if (!tr.man) tr.full = true; e.status = 'Truck carries a different ore'; return; }
     e.target = -2; e.status = 'Loading truck from stockpile';
     if (cycleStep(e, REHANDLE_CYCLE, 'rehandle')) {
-      const r = room(tr), b = Math.round(BUCKET_M3 * .95 * (DENS[e.pileMat] || 1.4)), mv = Math.min(b, e.pile, r);
-      loadFrom(tr, e.pileMat, mv, gradeOf(e)); e.pile -= mv; e.passes++;
-      if (e.pile < 1e-6) { e.pile = 0; e.pileMat = null; }
+      const r = room(tr), b = Math.round(BUCKET_M3 * .95 * (DENS[hp.m] || 1.4)), mv = Math.min(b, hp.t, r);
+      loadFrom(tr, hp.m, mv, [hp.ga, hp.gs]); hp.t -= mv; e.passes++; e.pile = hp.t;
+      if (hp.t < 1e-6) { dropEmptyHeaps(); e.pile = 0; e.pileMat = null; }
       if (room(tr) < b * .4 && !tr.man) tr.full = true;
     }
     return;
@@ -1193,19 +1220,20 @@ function updExcavator(e) {
     e.target = i; e.status = 'Stripping overburden';
     if (cycleStep(e, STRIP_CYCLE, 'strip')) {
       const mv = Math.min(ob[i], 18);
-      ob[i] -= mv; e.spoil = (e.spoil || 0) + mv * 3;
+      ob[i] -= mv; const sh = castHeap(e, 'spoil', 'spoil'); sh.t += mv * 3; e.spoil = sh.t;
       if (ob[i] <= 1e-6) { ob[i] = 0; hooks.onStrip(i); e.dig = -1; }
     }
     return;
   }
   const m = face, slow = needsBlast(i);
   if (!tr) {   // no truck: dig onto the stockpile
-    if (pile >= EXC_PILE_CAP - 1e-6) { e.status = bay === undefined ? 'Stockpile full — no road at bay' : 'Stockpile full — waiting for truck'; e.target = -1; e.job = null; return; }
-    if (pile >= 1 && e.pileMat !== m) { e.status = 'Stockpile holds a different ore'; e.target = -1; e.job = null; return; }
+    const ch = castHeap(e, 'pile', null), cp = ch ? ch.t : 0;
+    if (cp >= EXC_PILE_CAP - 1e-6) { e.status = bay === undefined ? 'Stockpile full — no road at bay' : 'Stockpile full — waiting for truck'; e.target = -1; e.job = null; return; }
+    if (cp >= 1 && ch.m !== m) { e.status = 'Stockpile holds a different ore'; e.target = -1; e.job = null; return; }
     e.target = i; e.status = slow ? 'Digging unblasted rock (slow)' : 'Digging to stockpile';
     if (cycleStep(e, cycleOf(i), 'pile')) {
-      const g = [gA[i], gS[i]], k = takeOre(e, i, Math.min(bucketT(i), Math.ceil(EXC_PILE_CAP - pile)));
-      blendG(e, 'ga', 'gs', pile, k, g); e.pile = pile + k; e.pileMat = m;
+      const g = [gA[i], gS[i]], k = takeOre(e, i, Math.min(bucketT(i), Math.ceil(EXC_PILE_CAP - cp)));
+      if (k > 0) { const h = castHeap(e, 'pile', m); h.m = m; blendG(h, 'ga', 'gs', h.t, k, g); h.t += k; }
     }
     return;
   }
@@ -1288,7 +1316,7 @@ function updCrusher(e) {
   if (satO <= 0) { e.status = 'No power'; return; }
   const mv = Math.min(CRUSH_RATE * satO * DT, e.stock, 20 - have);
   if (GRADED.has(out)) blendG(e, 'oga', 'ogs', have, mv, gradeOf(e));
-  e.stock -= mv; e.outb[out] = have + mv; e.flow = mv; e.anim += satO; madeAdd(out, mv);
+  e.stock -= mv; e.outb[out] = have + mv; e.flow = mv; e.anim += satO; madeAdd(out, mv); stats.crushed = (stats.crushed || 0) + mv;
   e.status = 'Crushing ' + ITEMS[e.mat].n;
 }
 function updWash(e) {
@@ -1796,7 +1824,7 @@ function serialize() {
     if (ob[i] !== obInit[i]) obd.push(i, ob[i]);
     if (creep[i]) cr.push(i);
   }
-  return { v: 7, fr, pm, W, H, seed: SEED, sp: [SPAWN.x, SPAWN.y], tick, stores: { ...stores }, rs, satP, satO, nextTruck, nextHive, stats: JSON.parse(JSON.stringify(stats)), power: { ...power }, es, ns, ts, od, obd,
+  return { v: 7, fr, pm, hp: heaps.map(h => ({ ...h })), W, H, seed: SEED, sp: [SPAWN.x, SPAWN.y], tick, stores: { ...stores }, rs, satP, satO, nextTruck, nextHive, stats: JSON.parse(JSON.stringify(stats)), power: { ...power }, es, ns, ts, od, obd,
     cr, hv: hives.map(h => ({ ...h })), fl: flights.map(f => ({ ...f })), nextBug, bg: bugs.map(b => ({ id: b.id, x: b.x, y: b.y, hp: b.hp, bite: b.bite, h: b.h, tgt: b.tgt && !b.tgt.dead ? idx.get(b.tgt) : -1 })) };
 }
 function load(s) {
@@ -1811,6 +1839,7 @@ function load(s) {
   creep.fill(0); for (const i of s.cr) creep[i] = 1;
   frag.fill(0); for (const i of s.fr || []) frag[i] = 1;
   pit.fill(0); for (const i of s.pm || []) pit[i] = 1;
+  heaps.length = 0; for (const h of s.hp || []) heaps.push({ ...h });
   hives.length = 0; for (const h of s.hv) hives.push({ ...h });
   flights.length = 0; for (const f of s.fl) flights.push({ ...f });
   nextHive = s.nextHive || 1;
@@ -1824,6 +1853,10 @@ function load(s) {
     for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) cells[e.x + i + (e.y + j) * W] = e;
     ents.push(e);
   }
+  if (!s.hp) for (const e of ents) if (e.type === 'excavator') {   // older saves kept heaps on the excavator
+    if (e.pile >= 1 && e.pileMat) { const [x, y] = heapPos(e, 'pile'); heaps.push({ x, y, m: e.pileMat, t: e.pile, ga: e.ga, gs: e.gs }); }
+    if (e.spoil > 0) { const [x, y] = heapPos(e, 'spoil'); heaps.push({ x, y, m: 'spoil', t: e.spoil }); }
+  }
   refreshBelts(); rebuildNets();
   for (const [i, f, a] of s.ns) { const p = ents[i]; if (p && p.net) { p.net.fluid = f; p.net.amt = a; } }
   bugs.length = 0; for (const o of s.bg || []) bugs.push({ ...o, tgt: o.tgt >= 0 ? ents[o.tgt] : null });
@@ -1833,7 +1866,7 @@ const f64 = new Float64Array(1), u32 = new Uint32Array(f64.buffer);
 function checksum() {
   let h = 2166136261 | 0;
   const mix = v => { f64[0] = +v || 0; h = Math.imul(h ^ u32[0], 16777619); h = Math.imul(h ^ u32[1], 16777619); };
-  mix(tick); for (const k of Object.keys(stores).sort()) mix(stores[k]); mix(ents.length); mix(trucks.length); mix(rs);
+  mix(tick); for (const k of Object.keys(stores).sort()) mix(stores[k]); mix(ents.length); mix(trucks.length); mix(rs); mix(heaps.length); for (const h of heaps) mix(h.t);
   for (const e of ents) {
     mix(e.x); mix(e.y); mix(e.dir);
     if (e.items) for (const it of e.items) mix(it.pos);
@@ -1868,7 +1901,7 @@ const Sim = {
   T, W, H, DX, DY, DIRN, DT, CHEST_CAP, RESIDUE_CAP, BIN_CAP, TRUCK_CAP, EXC_REACH, ALUMINA_PER_FEED,
   ITEMS, FLUIDS, BULK, ALLOC, IMPORTS, MATS, DEFS, GROUPS, POT_IN, stores, costOf, canAfford, shortOf,
   hash, mulberry, vnoise, fbm, waterField, water, isWater, oreType, oreAmt, ob, oreInit, oreInitAmt, obInit,
-  cells, ents, trucks, stats, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
+  cells, ents, trucks, heaps, stats, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
   get, fp, l2w, makeEnt, canPlace, placeError, place, removeEnt, beltPoint, handPos, isPipe, isJunction, bays, excTiles,
   hard, gA, gS, elev0, frag, pit, depthM, elevAt, benchOf, needsBlast, digFactor, capOf, DENS, SWELL, ROM_OF, CRUSHED, ROM_PAD, DRILL_R, GRADER_R, PATTERN, TAIL_CAP, BUCKET_M3, DEF_G, GRADED, gradeOf, bucketT, cycleOf, speedFor, gradeBetween,
   step, applyCmd, serialize, load, checksum, newWorld, SPAWN, SAFE_R, get seed() { return SEED; }, get patches() { return patchList; },
