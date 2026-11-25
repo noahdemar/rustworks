@@ -12,7 +12,7 @@ const PUBLIC = new Set(['/index.html', '/sim.js', '/client.js']);
 // ---------------------------------------------------------------- load save
 let loaded = false;
 if (fs.existsSync(SAVE)) {
-  try { const snap = JSON.parse(fs.readFileSync(SAVE, 'utf8')); if (snap.v !== 6) throw new Error('old save format (v' + snap.v + ')'); Sim.load(snap); Sim.releaseAll(); loaded = true; console.log(`Loaded save at tick ${Sim.tick} (world seed ${Sim.seed})`); }
+  try { const snap = JSON.parse(fs.readFileSync(SAVE, 'utf8')); if (snap.v !== 6 && snap.v !== 7) throw new Error('old save format (v' + snap.v + ')'); Sim.load(snap); Sim.releaseAll(); loaded = true; console.log(`Loaded save at tick ${Sim.tick} (world seed ${Sim.seed})`); }
   catch (e) { console.warn('Save unreadable, starting fresh:', e.message); }
 }
 if (!loaded) {   // brand-new procedurally generated world (set WORLD_SEED to replay a particular map)

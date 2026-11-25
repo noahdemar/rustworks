@@ -90,8 +90,7 @@ function buildChunk(cx, cy) {
   for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) { const t = S.oreInit[x + y * W]; if (t) { tg.fillStyle = stain[t]; tg.beginPath(); tg.ellipse(x * T + 16, y * T + 16, 22, 20, 0, 0, 2 * PI); tg.fill(); } }
   for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
     const i = x + y * W;
-    if (S.oreInit[i] && !oreType[i] && S.oreInit[i] !== 'oil') depleteTile(x, y);
-    else if (oreType[i] && S.obInit[i] > 0 && ob[i] <= 0) stripTile(i);
+    if (isMined(i)) mineTile(i);
     else if (oreType[i]) drawOreTile(x, y);
   }
   tg = null;
@@ -122,6 +121,49 @@ function drawOreTile(tx, ty) {
   } else {
     const n = 3 + Math.min(3, oreAmt[i] / 700 | 0);
     for (let k = 0; k < n; k++) rock(tg, tx * T + 5 + rnd() * 22, ty * T + 5 + rnd() * 22, 3 + rnd() * 4.5, ORECOL[t], rnd);
+  }
+}
+// ---- open pits: every dug tile is redrawn from its depth, so benches step down and the walls catch the light
+const MINECOL = { bauxite: [128, 52, 22], coal: [40, 36, 33], limestone: [172, 166, 150] };
+const isMined = i => { const t0 = S.oreInit[i]; return !!t0 && t0 !== 'oil' && (S.depthM(i) > .05 || S.frag[i] === 1); };
+function mineTile(i) {
+  const tx = i % W, ty = i / W | 0, x = tx * T, y = ty * T, t = oreType[i];
+  const d = S.depthM(i), dk = Math.max(.42, 1 - d * .028);
+  const base = t ? MINECOL[t] : [96, 80, 62];
+  tg.fillStyle = `rgb(${base[0] * dk | 0},${base[1] * dk | 0},${base[2] * dk | 0})`; tg.fillRect(x, y, T, T);
+  const rnd = mulberry(i * 7 + 3);
+  for (let k = 0; k < 14; k++) { tg.fillStyle = rnd() < .5 ? 'rgba(0,0,0,.18)' : 'rgba(255,220,180,.08)'; tg.fillRect(x + rnd() * 30, y + rnd() * 30, 2, 1.5); }
+  if (t && S.frag[i]) {   // blasted: a field of broken, swollen rock
+    const col = ORECOL[t];
+    for (let k = 0; k < 9; k++) rock(tg, x + 4 + rnd() * 24, y + 4 + rnd() * 24, 2.4 + rnd() * 3.4, col, rnd);
+    for (let k = 0; k < 14; k++) { tg.fillStyle = 'rgba(0,0,0,.3)'; tg.fillRect(x + rnd() * 30, y + rnd() * 30, 1.5, 1.5); }
+  } else if (t && S.hard[i] === 2 && ob[i] <= 0) {   // exposed caprock: hard, cracked crust
+    tg.fillStyle = t === 'limestone' ? 'rgba(230,226,212,.35)' : 'rgba(150,88,52,.45)'; tg.fillRect(x + 1, y + 1, T - 2, T - 2);
+    tg.strokeStyle = 'rgba(20,10,4,.55)'; tg.lineWidth = 1;
+    for (let k = 0; k < 4; k++) { tg.beginPath(); let px = x + rnd() * 32, py = y + rnd() * 32; tg.moveTo(px, py); for (let n = 0; n < 3; n++) { px += (rnd() - .5) * 16; py += (rnd() - .5) * 16; tg.lineTo(px, py); } tg.stroke(); }
+  } else if (t) {
+    tg.strokeStyle = 'rgba(0,0,0,.2)'; tg.lineWidth = 1;
+    for (let k = 0; k < 3; k++) { const yy = y + 6 + k * 9 + rnd() * 3; tg.beginPath(); tg.moveTo(x, yy); tg.lineTo(x + T, yy + (rnd() - .5) * 3); tg.stroke(); }
+    if (ob[i] <= 0) drawOreTile(tx, ty);
+  }
+  // walls up to every higher neighbour; sun from the north-west
+  for (let dd = 0; dd < 4; dd++) {
+    const nx = tx + DX[dd], ny = ty + DY[dd]; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+    const j = nx + ny * W; if (water[j]) continue;
+    const dn = S.oreInit[j] && S.oreInit[j] !== 'oil' ? S.depthM(j) : 0, hgt = d - dn;
+    if (hgt < .4) continue;
+    const wp = Math.min(13, 2 + hgt * 1.15), lit = dd === 1 || dd === 2;
+    const rect = dd === 0 ? [x, y, T, wp] : dd === 2 ? [x, y + T - wp, T, wp] : dd === 3 ? [x, y, wp, T] : [x + T - wp, y, wp, T];
+    tg.fillStyle = lit ? 'rgba(232,200,160,.3)' : 'rgba(0,0,0,.42)'; tg.fillRect(...rect);
+    tg.fillStyle = 'rgba(255,240,210,.28)';   // bench crest
+    if (dd === 0) tg.fillRect(x, y, T, 1.5); else if (dd === 2) tg.fillRect(x, y + T - 1.5, T, 1.5); else if (dd === 3) tg.fillRect(x, y, 1.5, T); else tg.fillRect(x + T - 1.5, y, 1.5, T);
+  }
+}
+function remine(i) {
+  const tx = i % W, ty = i / W | 0;
+  for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const x = tx + dx, y = ty + dy; if (x < 0 || y < 0 || x >= W || y >= H) continue;
+    const j = x + y * W; if (isMined(j)) onChunkOf(x, y, () => mineTile(j));
   }
 }
 function depleteTile(tx, ty) {
@@ -174,6 +216,16 @@ const SPR = {
   bauxite: mkS(g => { const r = mulberry(3); rock(g, 13, 14, 8, ORECOL.bauxite, r); rock(g, 21, 19, 6.5, ORECOL.bauxite, r); for (let i = 0; i < 6; i++) pisolite(g, 8 + r() * 16, 16 + r() * 8, 1.6, r); }),
   coal: mkS(g => { const r = mulberry(5); rock(g, 13, 14, 8.5, ORECOL.coal, r); rock(g, 21, 18, 7, ORECOL.coal, r); rock(g, 14, 22, 6, ORECOL.coal, r); }),
   limestone: mkS(g => { const r = mulberry(9); rock(g, 13, 14, 8.5, ORECOL.limestone, r); rock(g, 21, 19, 7, ORECOL.limestone, r); }),
+  rombx: mkS(g => { const r = mulberry(4); rock(g, 12, 13, 10, ORECOL.bauxite, r); rock(g, 22, 20, 8, ORECOL.bauxite, r); rock(g, 9, 23, 5, ORECOL.bauxite, r); }),
+  romcoal: mkS(g => { const r = mulberry(6); rock(g, 12, 13, 10, ORECOL.coal, r); rock(g, 22, 20, 8, { base: '#4a4440', hi: '#7a726a', dark: '#1a1714' }, r); }),
+  romlime: mkS(g => { const r = mulberry(8); rock(g, 13, 13, 10.5, ORECOL.limestone, r); rock(g, 22, 21, 7.5, ORECOL.limestone, r); }),
+  anfo: mkS(g => {
+    shadowE(g, 16, 27, 12, 3.5);
+    g.fillStyle = '#6b5a3a'; g.fillRect(5, 9, 22, 17); g.fillStyle = '#8a7650'; g.fillRect(5, 9, 22, 4);
+    g.strokeStyle = '#2a2116'; g.lineWidth = 1; g.strokeRect(5, 9, 22, 17);
+    g.fillStyle = '#e8641c'; g.beginPath(); g.moveTo(16, 13); g.lineTo(22, 19); g.lineTo(16, 25); g.lineTo(10, 19); g.closePath(); g.fill();
+    g.fillStyle = '#1a1208'; g.font = 'bold 5px sans-serif'; g.textAlign = 'center'; g.fillText('1.5D', 16, 21);
+  }),
   quicklime: mkS(g => sack(g, '#efeee9', '#7a7a7a', 'CaO')),
   caustic: mkS(g => sack(g, '#f2f2f4', '#7b4bb8', 'NaOH')),
   cryolite: mkS(g => sack(g, '#ebe4d0', '#2f8a86', 'Na₃AlF₆')),
@@ -593,7 +645,7 @@ function drawPortStubs(c, d) {
     if (DX[p.d]) c.fillRect(ex - 2, ey - 9, 4, 18); else c.fillRect(ex - 9, ey - 2, 18, 4);
   }
 }
-const NO_BADGE = new Set(['road', 'pipe', 'ptg', 'belt', 'residue', 'hopper', 'bin', 'pad']);
+const NO_BADGE = new Set(['road', 'pipe', 'ptg', 'belt', 'residue', 'hopper', 'bin', 'pad', 'tailings', 'drill']);
 function star(c, x, y, r, col) {
   c.fillStyle = col; c.beginPath();
   for (let k = 0; k < 10; k++) { const a = -PI / 2 + k * PI / 5, rr = k % 2 ? r * .42 : r; c[k ? 'lineTo' : 'moveTo'](x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
@@ -776,7 +828,7 @@ Object.assign(SPR, {
   cement: mkS(g => sack(g, '#d6d2c8', '#7a756c', 'CEM')),
   ammo: mkS(g => { shadowE(g, 16, 27, 12, 3.5); g.fillStyle = '#4c5a34'; rr0(g, 4, 10, 24, 16, 2); g.fill(); g.strokeStyle = '#1e2414'; g.lineWidth = 1; g.stroke(); g.fillStyle = '#e6c84a'; g.fillRect(4, 15, 24, 2.5); g.fillStyle = '#222'; g.font = 'bold 5px sans-serif'; g.textAlign = 'center'; g.fillText('30MM', 16, 24); g.fillStyle = '#b08a3a'; for (let k = 0; k < 4; k++) { g.fillRect(8 + k * 5, 5, 3, 6); } }),
 });
-const MATCOL = { bauxite: '#a8502a', coal: '#2c2c30', limestone: '#cfc9b8', coke: '#4c4c54', gibbsite: '#efe8d6', redmud: '#8a2c16' };
+const MATCOL = { bauxite: '#a8502a', coal: '#2c2c30', limestone: '#cfc9b8', coke: '#4c4c54', gibbsite: '#efe8d6', redmud: '#8a2c16', rombx: '#8a3e1e', romcoal: '#222226', romlime: '#b6af9c' };
 ORECOL.oil = { base: '#1a1512', hi: '#5a5048', dark: '#000' };
 
 // ---------------------------------------------------------------- terrain updates
@@ -1105,6 +1157,86 @@ Object.assign(DRAW, {
 });
 
 // ---------------------------------------------------------------- world-frame overlays
+Object.assign(DRAW, {
+  // explosives magazine for the drill rig (the rig itself trams out to the holes)
+  drill(c, e) {
+    c.fillStyle = '#5c5a3e'; rrect(c, 2, 2, 60, 60, 10); c.fill();   // earth berm
+    c.fillStyle = 'rgba(255,255,220,.08)'; rrect(c, 4, 4, 56, 20, 8); c.fill();
+    concrete(c, 12, 12, 40, 34);
+    c.fillStyle = '#4b4f45'; c.fillRect(14, 14, 36, 30);
+    corrugated(c, 14, 14, 36, 30, '#6d7563', '#4c5446', false);
+    c.fillStyle = '#2a2622'; c.fillRect(24, 40, 16, 10); c.strokeStyle = '#141210'; c.lineWidth = 1; c.strokeRect(24, 40, 16, 10);
+    c.fillStyle = '#e8641c'; c.beginPath(); c.moveTo(32, 18); c.lineTo(39, 25); c.lineTo(32, 32); c.lineTo(25, 25); c.closePath(); c.fill();
+    stencil(c, '1.5D', 32, 27.5, 5.5, '#1a1208');
+    const n = Math.min(6, e.inb ? e.inb.anfo || 0 : 0);
+    for (let k = 0; k < n; k++) { c.drawImage(SPR.anfo, 6 + (k % 3) * 8, 48 + (k / 3 | 0) * 6, 10, 10); }
+    c.fillStyle = '#b8262a'; c.fillRect(54, 6, 1.5, 14); c.beginPath(); c.moveTo(55.5, 6); c.lineTo(62, 9); c.lineTo(55.5, 12); c.fill();
+    if (e.fuse > 0 && (tnow() * 4 | 0) % 2) { c.save(); c.shadowColor = '#ff3a2a'; c.shadowBlur = 10; c.fillStyle = '#ff3a2a'; circle(c, 10, 10, 3.5); c.fill(); c.restore(); }
+  },
+  crusher(c, e) {
+    concrete(c, 2, 2, 92, 92);
+    hazard(c, 2, 2, 92, 4); hazard(c, 2, 2, 4, 92);
+    // ROM pad and its heap of big lumps
+    c.fillStyle = '#5a5248'; c.fillRect(8, 8, 50, 80);
+    const f = Math.min(1, (e.stock || 0) / S.ROM_PAD);
+    if (e.mat && f > 0) {
+      heapFill(c, 33, 48, 8 + 20 * Math.sqrt(f), MATCOL[e.mat]);
+      const r = mulberry(7), col = ORECOL[S.CRUSHED[e.mat]] || ORECOL.bauxite;
+      for (let k = 0; k < 4 + f * 10; k++) rock(c, 33 + (r() - .5) * 34 * Math.sqrt(f), 48 + (r() - .5) * 50 * Math.sqrt(f), 2.5 + r() * 3, col, r);
+    }
+    // jaw crusher house, feed chute from the pad, flywheels
+    body(c, 60, 14, 30, 46, 3, '#6d8a7b', '#3e574b');
+    c.fillStyle = '#2a2622'; c.beginPath(); c.moveTo(58, 30); c.lineTo(66, 26); c.lineTo(66, 46); c.lineTo(58, 42); c.closePath(); c.fill();
+    const sp = (e.anim || 0) * .25;
+    for (const fy of [20, 52]) { c.save(); c.translate(84, fy); c.rotate(sp); c.fillStyle = '#26231f'; circle(c, 0, 0, 7); c.fill(); c.strokeStyle = '#8a8d90'; c.lineWidth = 1.5; line(c, -6, 0, 6, 0); line(c, 0, -6, 0, 6); c.restore(); }
+    c.fillStyle = '#a82a26'; c.fillRect(60, 56, 30, 3);
+    // discharge conveyor
+    c.fillStyle = '#26231f'; c.fillRect(66, 62, 16, 30);
+    const off = ((e.anim || 0) * .6) % 6;
+    for (let yy = 62 + off; yy < 92; yy += 6) { c.fillStyle = '#4c4842'; c.fillRect(67, yy, 14, 3); }
+    if (e.flow > 0 && e.mat) { c.fillStyle = MATCOL[S.CRUSHED[e.mat]] || '#888'; c.globalAlpha = .8; c.fillRect(70, 62, 8, 30); c.globalAlpha = 1; }
+    stencil(c, 'ROM', 33, 92, 7, '#f2d24a');
+  },
+  washplant(c, e) {
+    concrete(c, 2, 2, 92, 124);
+    // log washer: an inclined trough with two counter-rotating paddle logs
+    c.fillStyle = '#3a3e3a'; rrect(c, 10, 10, 40, 92, 4); c.fill(); c.strokeStyle = '#1b1d1a'; c.lineWidth = 1.5; c.stroke();
+    c.fillStyle = 'rgba(140,96,60,.85)'; c.fillRect(14, 14, 32, 84);
+    const off = ((e.anim || 0) * .8) % 8;
+    for (const lx of [22, 38]) { c.fillStyle = '#5a5e5a'; c.fillRect(lx - 3, 14, 6, 84); c.fillStyle = '#2a2c2a'; for (let yy = 14 + off; yy < 98; yy += 8) c.fillRect(lx - 5, yy, 10, 2); }
+    // vibrating screen deck with spray bars
+    c.fillStyle = '#56603f'; c.fillRect(56, 12, 32, 50); c.strokeStyle = '#2b301f'; c.strokeRect(56, 12, 32, 50);
+    c.strokeStyle = 'rgba(200,210,190,.5)'; c.lineWidth = 1; for (let xx = 58; xx < 88; xx += 3) line(c, xx, 14 + (e.wact ? Math.sin(tnow() * 40) : 0), xx, 60);
+    c.strokeStyle = '#3d8fd1'; c.lineWidth = 2; for (const yy of [20, 34, 48]) line(c, 56, yy, 88, yy);
+    if (e.wact) { c.fillStyle = 'rgba(160,200,240,.35)'; for (let k = 0; k < 6; k++) c.fillRect(58 + Math.random() * 28, 16 + Math.random() * 42, 2, 2); }
+    // tailings launder
+    c.fillStyle = '#26231f'; c.fillRect(58, 70, 30, 8); c.fillStyle = '#a0805a'; c.fillRect(60, 72, 26, 4);
+    body(c, 56, 84, 32, 34, 3, '#6d8a7b', '#3e574b');
+    c.fillStyle = '#a82a26'; c.fillRect(56, 112, 32, 3);
+    stencil(c, 'WASH', 72, 104, 7, '#f2d24a');
+  },
+  tailings(c, e) {
+    c.fillStyle = '#6a5a40'; rrect(c, 2, 2, 156, 156, 18); c.fill();   // embankment
+    c.fillStyle = 'rgba(255,240,200,.12)'; rrect(c, 4, 4, 152, 40, 16); c.fill();
+    c.fillStyle = '#3c3326'; rrect(c, 16, 16, 128, 128, 12); c.fill();
+    const f = Math.min(1, (e.fill || 0) / S.TAIL_CAP);
+    if (f > 0) {
+      c.fillStyle = '#b89a6c'; rrect(c, 18, 18, 124, 124, 11); c.fill();   // beached fines
+      const r = 4 + 58 * Math.sqrt(f);
+      c.fillStyle = '#7a6448'; c.beginPath(); c.ellipse(80, 76, r * 1.05, r, 0, 0, 2 * PI); c.fill();   // decant pond
+      c.fillStyle = 'rgba(200,220,230,.18)'; c.beginPath(); c.ellipse(72, 68, r * .5, r * .3, -.4, 0, 2 * PI); c.fill();
+    }
+    c.fillStyle = '#5c5f62'; circle(c, 80, 76, 6); c.fill(); c.strokeStyle = '#26282a'; c.lineWidth = 2; c.stroke();
+    c.fillStyle = '#26231f'; c.fillRect(76, 140, 8, 18);
+  },
+  grader(c, e) {
+    concrete(c, 2, 2, 60, 60);
+    corrugated(c, 6, 4, 52, 40, '#7d8a6a', '#55604a', false);
+    c.fillStyle = '#2b2a26'; c.fillRect(14, 40, 36, 20); c.fillStyle = '#4a4943'; for (let yy = 42; yy < 58; yy += 3) c.fillRect(15, yy, 34, 1.5);
+    stencil(c, 'ГРЕЙДЕР', 32, 30, 6, '#f2d24a');
+    c.fillStyle = '#c9a227'; c.fillRect(8, 6, 6, 3);
+  },
+});
 function angLerp(a, b, k) { let d = ((b - a + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI; return a + d * k; }
 const smooth01 = x => x * x * (3 - 2 * x);
 function excXform(c, e) {   // draw at the free position and heading, not the 3x3 tile block it occupies
@@ -1128,12 +1260,13 @@ function drawExcavatorTop(c, e, dt) {
   const bay = [cx + DX[e.dir] * 64, cy + DY[e.dir] * 64];
   const spoil = [cx - DY[e.dir] * 70 - DX[e.dir] * 30, cy + DX[e.dir] * 70 - DY[e.dir] * 30];
   let tgt = face, loaded = false;
-  const JOBS = { 'Loading truck': [face, bay], 'Stripping overburden': [face, excHeapPos(e, 'spoil')], 'Digging to stockpile': [face, excHeapPos(e, 'pile')], 'Loading truck from stockpile': [excHeapPos(e, 'pile'), bay] };
-  if (JOBS[e.status]) {
-    const [from, other] = JOBS[e.status]; void spoil;
-    const ph = (tnow() * .45 + e.x * .13) % 1, face = from;
-    const s = ph < .35 ? 0 : ph < .5 ? smooth01((ph - .35) / .15) : ph < .85 ? 1 : 1 - smooth01((ph - .85) / .15);
-    tgt = [face[0] + (other[0] - face[0]) * s, face[1] + (other[1] - face[1]) * s]; loaded = s > .1 && s < .99 || (ph > .5 && ph < .85);
+  const JOBS = { load: [face, bay], strip: [face, excHeapPos(e, 'spoil')], pile: [face, excHeapPos(e, 'pile')], rehandle: [excHeapPos(e, 'pile'), bay] };
+  const busy = /^(Loading truck|Stripping|Digging)/.test(e.status || '');
+  if (busy && JOBS[e.job]) {   // dig 0-.35, swing .35-.55, dump .55-.75, return .75-1 (dumps in the sim at .62)
+    const [from, other] = JOBS[e.job]; void spoil;
+    const ph = e.cyc || 0, face = from;
+    const s = ph < .35 ? 0 : ph < .55 ? smooth01((ph - .35) / .2) : ph < .75 ? 1 : 1 - smooth01((ph - .75) / .25);
+    tgt = [face[0] + (other[0] - face[0]) * s, face[1] + (other[1] - face[1]) * s]; loaded = ph > .3 && ph < .64;
     e._dig = ph < .35;
   } else e._dig = false;
   const want = Math.atan2(tgt[1] - cy, tgt[0] - cx);
@@ -1157,7 +1290,7 @@ function drawExcavatorTop(c, e, dt) {
   c.fillStyle = '#4a4540'; c.beginPath(); c.moveTo(R - 10, -9); c.lineTo(R + 6, -11); c.lineTo(R + 8, 11); c.lineTo(R - 10, 9); c.closePath(); c.fill();
   c.strokeStyle = '#1b1815'; c.lineWidth = 1.2; c.stroke();
   c.fillStyle = '#c8ccd0'; for (let k = -8; k <= 8; k += 4) c.fillRect(R + 6, k - 1, 4, 2);
-  if (loaded) heapFill(c, R - 1, 0, 7, e.status === 'Stripping overburden' ? '#7a5a40' : (MATCOL[e.status.includes('stockpile') ? e.pileMat : e.mat] || '#888'));
+  if (loaded) heapFill(c, R - 1, 0, 7, e.job === 'strip' ? '#7a5a40' : (MATCOL[e.job === 'rehandle' ? e.pileMat : e.mat] || '#888'));
   c.restore();
   if (e._dig && Math.random() < .3 && particles.length < 700) particles.push({ x: face[0] + (Math.random() - .5) * 16, y: face[1] + (Math.random() - .5) * 16, vx: (Math.random() - .5) * .4, vy: -.2, life: 0, max: 50, r: 4, k: 'dust' });
 }
@@ -1176,7 +1309,7 @@ function drawTruck(c, t, dt) {
   const want = t.man ? Math.atan2(t.hx, -t.hy) : t.h * PI / 2; t._a = t._a === undefined ? want : angLerp(t._a, want, Math.min(1, dt * (t.man ? 20 : 8)));
   c.save(); c.translate(t._x, t._y); c.rotate(t._a);
   c.scale(.74, .74);
-  drawUral(c, t.load / TRUCK_CAP, t.mat, t.tip || 0, t.drv ? (roster.get(t.drv) || (t.drv === me.id ? me : null)) : null);
+  drawUral(c, t.mat ? t.load / S.capOf(t.mat) : 0, t.mat, t.tip || 0, t.drv ? (roster.get(t.drv) || (t.drv === me.id ? me : null)) : null);
   if (t.status === 'Waiting in traffic' || t.next < 0 && t.path && t.path.length || (t.man && t.drv && t.th < 0)) { c.fillStyle = '#ff3a2a'; c.fillRect(-11, 31, 4, 2); c.fillRect(7, 31, 4, 2); }
   c.restore();
   if ((t.tip || 0) > .3 && Math.random() < .4) particles.push({ x: t._x - DX[t.h] * 14, y: t._y - DY[t.h] * 14, vx: (Math.random() - .5) * .3, vy: -.15, life: 0, max: 60, r: 5, k: 'dust' });
@@ -1207,6 +1340,13 @@ function drawRoad(c, r) {
   c.fillStyle = '#6a5640';
   for (let d = 0; d < 4; d++) if (!nb[d]) { if (DX[d]) c.fillRect(x + (DX[d] > 0 ? T - 4 : 0), y, 4, T); else c.fillRect(x, y + (DY[d] > 0 ? T - 4 : 0), T, 4); }
   c.fillStyle = 'rgba(255,230,190,.18)'; for (let k = 0; k < 4; k++) { const hh = hash(r.x * 4 + k, r.y, 22); c.fillRect(x + hh * 30, y + hash(r.x, r.y * 4 + k, 23) * 30, 1.5, 1.5); }
+  const wr = r.wear || 0;
+  if (wr > .04) {   // ruts and potholes worn in by loaded trucks
+    c.fillStyle = `rgba(40,28,16,${Math.min(.55, wr * .7)})`;
+    const vert = (nb[0] || nb[2]) && !(nb[1] || nb[3]);
+    for (const o of [-10, -4, 4, 10]) { if (vert) c.fillRect(x + 16 + o - 1, y, 2, T); else c.fillRect(x, y + 16 + o - 1, T, 2); }
+    if (wr > .45) for (let k = 0; k < (wr * 5 | 0); k++) { c.fillStyle = 'rgba(30,22,14,.6)'; c.beginPath(); c.ellipse(x + 5 + hash(r.x, r.y, 40 + k) * 22, y + 5 + hash(r.y, r.x, 50 + k) * 22, 2.5, 1.8, 0, 0, 2 * PI); c.fill(); }
+  }
   if (creep[i]) { c.fillStyle = 'rgba(80,30,70,.35)'; c.fillRect(x, y, T, T); }
 }
 function drawSignal(c, r) {
@@ -1485,7 +1625,7 @@ function startGame() {
   else {
     online = false; joined = true; me.id = 1;
     let loaded = false;
-    try { const s = localStorage.getItem('rw-save'); const snap = s && JSON.parse(s); if (snap && snap.v === 6) { loadSnap(snap); loaded = true; } } catch (e) {}
+    try { const s = localStorage.getItem('rw-save'); const snap = s && JSON.parse(s); if (snap && (snap.v === 6 || snap.v === 7)) { loadSnap(snap); loaded = true; } } catch (e) {}
     if (!loaded) { S.newWorld((Math.random() * 2 ** 31) | 0); syncTerrain(); }
     if (!ents.length) S.place('substation', S.SPAWN.x - 4, S.SPAWN.y - 4, 0, true);
     me.x = S.SPAWN.x + .5; me.y = S.SPAWN.y + .5; cam.x = me.x * T; cam.y = me.y * T;
@@ -1502,8 +1642,9 @@ function showJoin(v, msg) { $('join').style.display = v ? 'flex' : 'none'; if (m
 // =====================================================================
 const beams = [];
 const avatarOf = pid => pid === me.id ? me : others.get(pid);
-S.hooks.onStrip = i => onChunkOf(i % W, i / W | 0, () => stripTile(i));
-S.hooks.onDeplete = i => { if (S.oreInit[i] !== 'oil') onChunkOf(i % W, i / W | 0, () => depleteTile(i % W, i / W | 0)); };
+S.hooks.onStrip = remine;
+S.hooks.onDeplete = i => { if (S.oreInit[i] !== 'oil') remine(i); };
+S.hooks.onDig = remine;
 S.hooks.onCmd = (pid, o) => {
   if (o.k === 'shoot') { const a = avatarOf(pid); if (a) { a.buildT = .2; const b = bugs.find(b => b.id === o.id); const tx = b ? b.x * T : a.x * T, ty = b ? b.y * T : a.y * T; a.aim = Math.atan2(ty - a.y * T, tx - a.x * T); a.ang = a.aim; tracers.push({ x0: a.x * T, y0: a.y * T, x1: tx, y1: ty, t: .12 }); } return; }
   if (!['place', 'remove', 'rotate', 'truck', 'signal', 'setdir'].includes(o.k)) return;
@@ -1530,12 +1671,22 @@ S.hooks.onEvent = (k, d) => {
     case 'raid': if (performance.now() - raidCool > 20000) { raidCool = performance.now(); feed(`<b>Raid!</b> ${d.n} bugs left a colony at (${d.x}, ${d.y}), heading for (${d.tx}, ${d.ty}).`, 'bad', 9000); } break;
     case 'destroyed': feed(`Bugs destroyed a ${esc(DEFS[d.type] ? DEFS[d.type].n : d.type)} at (${d.x}, ${d.y}).`, 'bad', 8000); burst((d.x + 1) * T, (d.y + 1) * T, 40, 'smoke'); break;
     case 'bugdie': splats.push({ x: d.x * T, y: d.y * T, t: 0, r: hash(d.x * 9 | 0, d.y * 9 | 0, 3) * 6 }); if (splats.length > 200) splats.shift(); break;
+    case 'blast': {
+      let near = Math.hypot(d.x - me.x, d.y - me.y) < 40;
+      for (const i of d.tiles) {
+        const x = (i % W + .5) * T, y = ((i / W | 0) + .5) * T;
+        burst(x, y, 10, 'fire'); burst(x, y, 16, 'blastdust');
+        for (let k = 0; k < 6 && particles.length < 900; k++) { const a = Math.random() * 2 * PI, v = 1 + Math.random() * 2.5; particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1.2, life: 0, max: 40 + Math.random() * 20, r: 1.5 + Math.random() * 2, k: 'fly', g: .06 }); }
+      }
+      if (near) { shake = Math.max(shake, .5); feed(`Blast fired: ${d.tiles.length} hole${d.tiles.length > 1 ? 's' : ''} at (${d.x}, ${d.y}). The rock is broken and ready to dig.`, 'sys', 5000); }
+      break;
+    }
     case 'infested': if (infestCool <= 0) { feed(`Bugs have overrun a ${esc(DEFS[d.type] ? DEFS[d.type].n : d.type)} at (${d.x}, ${d.y}).`, 'bad'); infestCool = 10; } break;
   }
 };
 function burst(x, y, n, k) {
   for (let i = 0; i < n && particles.length < 900; i++) {
-    const a = Math.random() * 2 * PI, v = Math.random() * (k === 'fire' ? 3 : 1.2);
+    const a = Math.random() * 2 * PI, v = Math.random() * (k === 'fire' ? 3 : k === 'blastdust' ? 1.6 : 1.2);
     particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - .2, life: 0, max: 60 + Math.random() * 80, r: 4 + Math.random() * 8, k });
   }
 }
@@ -1544,7 +1695,7 @@ function burst(x, y, n, k) {
 //  input
 // =====================================================================
 let mx = vw / 2, my = vh / 2, lmb = false, rmb = false, tool = null, rot = 0, overUI = false, cat = 0, targeting = null;
-let dragSent = new Set(), lastDrag = null, sel = null;
+let dragSent = new Set(), lastDrag = null, sel = null, pitDrag = null;
 const keys = {};
 const curTile = () => { const w = s2w(mx, my); return [Math.floor(w.x / T), Math.floor(w.y / T)]; };
 function anchorFor(type, tx, ty, dir) { const [fw, fh] = fp(type, dir); return [tx - ((fw - 1) >> 1), ty - ((fh - 1) >> 1)]; }
@@ -1568,11 +1719,19 @@ cv.addEventListener('mousedown', e => {
     if (!tool && myExc()) { const [tx, ty] = curTile(); cmd({ k: 'digat', i: tx + ty * W }); return; }
     if (!tool) { inspectAt(); return; }
     lmb = true; dragSent = new Set(); lastDrag = null;
+    if (tool === 'pit') { pitDrag = curTile(); lmb = false; return; }
     if (tool === 'truck' || tool === 'signal') { const [tx, ty] = curTile(); if (inReach(tx, ty)) cmd({ k: tool, x: tx, y: ty }); else outOfReach(); lmb = false; return; }
     act();
   } else if (e.button === 2) { if (targeting) { targeting = null; return; } rmb = true; dragSent = new Set(); act(); }
 });
-addEventListener('mouseup', e => { if (e.button === 0) lmb = false; if (e.button === 2) rmb = false; });
+addEventListener('mouseup', e => {
+  if (e.button === 0) lmb = false; if (e.button === 2) rmb = false;
+  if (e.button === 0 && pitDrag) {
+    const [tx, ty] = curTile(), [sx, sy] = pitDrag; pitDrag = null;
+    if (Math.abs(tx - sx) > 40 || Math.abs(ty - sy) > 40) { feed('A pit outline can be at most 41 × 41 tiles. Lay out bigger pits in pieces.', 'warn', 3500); return; }
+    if (sx >= 0 && sy >= 0 && sx < W && sy < H) cmd({ k: 'pit', x: sx, y: sy, x1: Math.max(0, Math.min(W - 1, tx)), y1: Math.max(0, Math.min(H - 1, ty)), on: !S.pit[sx + sy * W] });
+  }
+});
 cv.addEventListener('wheel', e => { e.preventDefault(); cam.z = Math.max(.35, Math.min(2.6, cam.z * Math.exp(-e.deltaY * .0015))); }, { passive: false });
 let reachWarn = 0;
 function outOfReach() { if (performance.now() - reachWarn > 1500) { reachWarn = performance.now(); feed('Too far away — walk closer to build.', 'warn', 2500); } }
@@ -1810,6 +1969,10 @@ function iconFor(type) {
   else if (type === 'road') { g.fillStyle = '#8a7458'; g.fillRect(2, 2, 32, 32); g.strokeStyle = 'rgba(60,44,30,.5)'; g.lineWidth = 3; line(g, 11, 2, 11, 34); line(g, 25, 2, 25, 34); g.fillStyle = '#6a5640'; g.fillRect(2, 2, 3, 32); g.fillRect(31, 2, 3, 32); }
   else if (type === 'signal') { g.fillStyle = '#1b1d20'; rrect(g, 12, 4, 12, 28, 3); g.fill(); for (const [yy, col] of [[10, '#ff3a2a'], [18, '#ffb020'], [26, '#3aff6a']]) { g.fillStyle = col; circle(g, 18, yy, 3); g.fill(); } }
   else if (type === 'truck') { g.translate(18, 18); g.rotate(PI / 2); drawTruckShape(g, .5, 'bauxite', 0); }
+  else if (type === 'pit') {
+    for (let k = 0; k < 4; k++) { const v = 150 - k * 28; g.fillStyle = `rgb(${v},${v * .48 | 0},${v * .25 | 0})`; g.fillRect(3 + k * 4, 3 + k * 4, 30 - k * 8, 30 - k * 8); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(3 + k * 4, 3 + k * 4, 30 - k * 8, 2); }
+    g.strokeStyle = '#ffce4a'; g.lineWidth = 1.5; g.setLineDash([3, 2]); g.strokeRect(2, 2, 32, 32); g.setLineDash([]);
+  }
   else {
     const s = 34 / (Math.max(d.w, d.h) * T); g.translate(18, 18); g.scale(s, s); g.translate(-d.w * T / 2, -d.h * T / 2);
     const f = S.makeEnt(type, 0, 0, 0); f.status = 'Idle'; DRAW[type](g, f); drawPortStubs(g, d);
@@ -1885,7 +2048,7 @@ function setTool(t) { tool = t; if (t) { sel = null; refreshInspect(true); } bui
 function updToolInfo() {
   if (!tool) { $('toolinfo').innerHTML = '<span class="dim">Click a building to inspect · <kbd>1-9</kbd> build · <kbd>H</kbd> guide</span>'; return; }
   const d = DEFS[tool], dirs = d.w > 1 || d.h > 1 || ['belt', 'inserter', 'feeder', 'ptg', 'pump'].includes(tool);
-  const hint = ['belt', 'pipe', 'road'].includes(tool) ? 'drag to lay' : tool === 'truck' ? 'click a road' : tool === 'signal' ? 'click a junction' : 'click to place';
+  const hint = tool === 'pit' ? 'drag a rectangle (start inside a pit to erase)' : ['belt', 'pipe', 'road'].includes(tool) ? 'drag to lay' : tool === 'truck' ? 'click a road' : tool === 'signal' ? 'click a junction' : 'click to place';
   $('toolinfo').innerHTML = `<b>${d.n}</b> ${costTxt(tool)} · ${hint}${dirs ? ` · <kbd>R</kbd> ${DIRN[rot]}` : ''} · <kbd>Esc</kbd>`;
 }
 // ---- HUD
@@ -1950,7 +2113,7 @@ const OBJ = [
 // ---- inspector
 const bar = (f, col = '#f0a945') => `<div class="prog"><i style="width:${Math.max(0, Math.min(100, f * 100))}%;background:${col}"></i></div>`;
 const kv = (k, v, cls = '') => `<div class="row"><span>${k}</span><span class="v ${cls}">${v}</span></div>`;
-const statusCls = s => !s ? '' : /^(Working|Operating|Pumping|Full load|Running|Feeding|Loading|GO|Being loaded|Tipping|→)/.test(s) ? 'good' : /(No power|Missing|FROZEN|ANODE|Infested|full|starved|No |exhausted|depleted|Insufficient|failed)/i.test(s) ? 'bad' : 'warn';
+const statusCls = s => !s ? '' : /^(Working|Operating|Pumping|Full load|Running|Feeding|Loading|GO|Being loaded|Tipping|→|Crushing|Washing|Drilling|Tramming|Grading|Settling|Digging|Stripping|Roads in good)/.test(s) ? 'good' : /(No power|Missing|FROZEN|ANODE|Infested|full|starved|No |exhausted|depleted|Insufficient|failed)/i.test(s) ? 'bad' : 'warn';
 let inspHash = '';
 function refreshInspect(force) {
   const box = $('inspect');
@@ -1959,7 +2122,10 @@ function refreshInspect(force) {
   if (sel.kind === 'truck') {
     const t = trucks.find(t => t.id === sel.id); if (!t) { sel = null; return refreshInspect(true); }
     html = `<h3>Haul truck #${t.id}<span class="x">×</span></h3><div class="b">` + kv('Status', esc(t.status), statusCls(t.status)) +
-      kv('Payload', `${Math.round(t.load)} / ${TRUCK_CAP} t${t.mat ? ' ' + ITEMS[t.mat].n : ''}`) + bar(t.load / TRUCK_CAP, '#d9a22b') +
+      kv('Payload', `${Math.round(t.load)} / ${t.mat ? S.capOf(t.mat) : TRUCK_CAP} t${t.mat ? ' ' + ITEMS[t.mat].n : ''}`) + bar(t.mat ? t.load / S.capOf(t.mat) : 0, '#d9a22b') +
+      (t.mat ? kv('Body', `${(t.load / (S.DENS[t.mat] || 1.4)).toFixed(0)} / 60 m³${S.capOf(t.mat) < TRUCK_CAP ? ' <span class="dim">(full by volume before weight)</span>' : ''}`) : '') +
+      (t.mat && S.GRADED.has(t.mat) ? kv('Assay', assay(S.gradeOf(t))) : '') +
+      (t.g !== undefined && !t.man ? kv('Road grade', `${(t.g * 100).toFixed(1)} %${t.g > .03 && t.load > 0 ? ' <span class="dim">(climbing loaded)</span>' : ''}`) : '') +
       (t.job ? kv('From', `${DEFS[t.job.src.type].n} (${t.job.src.x},${t.job.src.y})`) + kv('To', `${DEFS[t.job.sink.type].n} (${t.job.sink.x},${t.job.sink.y})`) + kv('Material', ITEMS[t.job.m].n) : kv('Job', 'none — waiting for dispatch', 'warn')) +
       `<div class="desc">Dispatched automatically: excavators, load-out bins and bulk imports → hoppers (matching filter) → residue area → residue area. Burns diesel by the tile.</div>` +
       `<div class="desc">${t.drv ? 'Being driven by ' + esc((roster.get(t.drv) || { name: 'someone' }).name) : 'Walk up to it and press <kbd>E</kbd> to drive it yourself.'}</div><button data-act="rmtruck" data-id="${t.id}">Scrap truck (all materials back)</button></div>`;
@@ -1976,6 +2142,17 @@ function refreshInspect(force) {
   inspHash = html; box.innerHTML = html; box.classList.add('on');
 }
 const padsList = () => ents.filter(e => e.type === 'pad');
+const assay = g => `${g[0].toFixed(1)} % Al₂O₃ · ${g[1].toFixed(1)} % SiO₂`;
+const HARDN = ['soft (digs free)', 'medium (blasting helps)', 'hard (blast it first)'];
+function tileInfo(i) {
+  const t = oreType[i]; if (!t || t === 'oil') return '';
+  let s = `${ITEMS[t].n} · ${fmt(oreAmt[i])} t in situ · ${S.frag[i] ? 'blasted' : HARDN[S.hard[i]]}`;
+  if (t === 'bauxite') s += ` · ${assay([S.gA[i], S.gS[i]])}`;
+  if (ob[i] > 0) s += ` · ${ob[i].toFixed(0)} t overburden`;
+  const d = S.depthM(i); if (d > .3) s += ` · ${d.toFixed(1)} m deep`;
+  if (S.pit[i]) s += ' · in pit';
+  return s;
+}
 function invList(o, lim, fluid) {
   const ks = Object.keys(o || {}).filter(k => (o[k] || 0) > 1e-6 || (lim && lim[k]));
   if (!ks.length) return '<span class="dim">—</span>';
@@ -1993,16 +2170,40 @@ function entPanel(e) {
   else if (e.type === 'chest') h += kv('Stored', `${e.total} / ${S.CHEST_CAP}`) + `<div>${invList(e.inv)}</div>`;
   else if (e.type === 'road') {
     const i = e.x + e.y * W;
-    h += kv('Type', S.isJunction(i) ? 'Junction' : 'Road') + (e.sig ? kv('Signal', e.sig.allred ? 'all red' : `${e.sig.green ? 'E-W' : 'N-S'} ${e.sig.amber ? 'amber' : 'green'}`) + kv('Waiting', `N-S ${e.sig.dem && e.sig.dem[0] ? 'yes' : 'no'} · E-W ${e.sig.dem && e.sig.dem[1] ? 'yes' : 'no'}`) : '') +
+    const wr = e.wear || 0;
+    h += kv('Type', S.isJunction(i) ? 'Junction' : 'Road') + kv('Surface', wr < .05 ? 'smooth' : `${Math.round(wr * 100)} % rutted · trucks ${Math.round(wr * 45)} % slower, +${Math.round(wr * 60)} % fuel`, wr > .3 ? 'warn' : '') +
+      kv('Elevation', `${S.elevAt(i).toFixed(1)} m`) + (e.sig ? kv('Signal', e.sig.allred ? 'all red' : `${e.sig.green ? 'E-W' : 'N-S'} ${e.sig.amber ? 'amber' : 'green'}`) + kv('Waiting', `N-S ${e.sig.dem && e.sig.dem[0] ? 'yes' : 'no'} · E-W ${e.sig.dem && e.sig.dem[1] ? 'yes' : 'no'}`) : '') +
       `<div class="desc">${d.desc}</div>`;
   } else if (e.type === 'hopper' || e.type === 'bin') {
     h += kv('Holding', `${Math.round(e.stock)} / ${S.BIN_CAP} t ${e.mat ? ITEMS[e.mat].n : ''}`) + bar(e.stock / S.BIN_CAP, e.mat ? MATCOL[e.mat] : '#555');
+    if (e.mat && S.GRADED.has(e.mat) && e.stock >= 1) h += kv('Assay (blended)', assay(S.gradeOf(e)));
     if (e.type === 'hopper') h += `<div class="sec">Accepts</div><div class="opts">` + [...BULK].map(m => `<button class="opt${e.mat === m ? ' on' : ''}" data-act="hopper" data-mat="${m}" ${e.stock >= 1 && e.mat !== m ? 'disabled' : ''}><img src="${sprSrc(m)}">${ITEMS[m].n}</button>`).join('') + '</div>' + (e.stock >= 1 ? '<div class="desc">Empty it before changing material.</div>' : '');
     h += `<div class="desc">${d.desc}</div>`;
   } else if (e.type === 'feeder') h += kv('Rate', `${(e.flow * 60).toFixed(1)} t/s`) + `<div class="desc">${d.desc}</div>`;
   else if (e.type === 'excavator') {
     const as = trucks.filter(t => t.job && t.job.src === e).length;
-    h += (e.dig >= 0 ? kv('Face', `${ITEMS[oreType[e.dig]] ? ITEMS[oreType[e.dig]].n : '—'}: ${fmt(oreAmt[e.dig])} t`) + kv('Overburden', ob[e.dig] > 0 ? `${ob[e.dig].toFixed(0)} t to strip` : 'stripped') : '') + kv('Trucks assigned', `${as} / 3`) + `<div class="desc">${d.desc}</div>`;
+    const i = e.dig;
+    if (i >= 0 && oreType[i]) {
+      h += kv('Face', `${ITEMS[oreType[i]].n}: ${fmt(oreAmt[i])} t`) + kv('Ground', ob[i] > 0 ? `${ob[i].toFixed(0)} t overburden to strip` : S.frag[i] ? 'blasted rock' : HARDN[S.hard[i]], ob[i] <= 0 && S.needsBlast(i) && S.hard[i] === 2 ? 'warn' : '');
+      if (oreType[i] === 'bauxite') h += kv('Assay', assay([S.gA[i], S.gS[i]]));
+      if (ob[i] <= 0) h += kv('Bucket', `${S.bucketT(i)} t per pass (12 m³ × fill factor) · ${(S.cycleOf(i) / 60).toFixed(1)} s cycle`) + kv('Bench', `${S.benchOf(i)} · ${S.depthM(i).toFixed(1)} m down`);
+    }
+    h += kv('Passes this truck', `${e.passes || 0}`) + (e.pile >= 1 ? kv('Stockpile', `${Math.round(e.pile)} / ${S.EXC_PILE_CAP} t ${ITEMS[e.pileMat] ? ITEMS[e.pileMat].n : ''}`) : '') + kv('Trucks assigned', `${as} / 3`) + `<div class="desc">${d.desc}</div>`;
+  } else if (e.type === 'drill') {
+    h += kv('Pattern', `${e.holes.length} / ${S.PATTERN} holes${e.dprog > 0 ? ` · drilling ${Math.round(e.dprog * 100)} %` : ''}`) + bar(e.holes.length / S.PATTERN, '#c9a227') +
+      kv('ANFO in magazine', invList(e.inb, DEFS.drill.ilim)) + kv('Charge', `${Math.ceil(Math.max(1, e.holes.length) / 2)} crate(s) for this pattern`) + kv('Blasts fired', `${stats.blasts || 0}`) +
+      `<div class="desc">${d.desc}</div><div class="desc">Set a supply depot to ANFO and inserter the crates into the magazine. Strip the overburden first: the rig only drills exposed rock.</div>`;
+  } else if (e.type === 'crusher') {
+    h += kv('ROM pad', `${Math.round(e.stock)} / ${S.ROM_PAD} t ${e.mat ? ITEMS[e.mat].n : ''}`) + bar(e.stock / S.ROM_PAD, e.mat ? MATCOL[e.mat] : '#555') +
+      (e.mat && S.GRADED.has(e.mat) ? kv('Assay', assay(S.gradeOf(e))) : '') + kv('Crushed', invList(e.outb)) + kv('Rate', `${(e.flow * 60).toFixed(1)} t/s`) + kv('Power', `${d.power} MW`) + `<div class="desc">${d.desc}</div>`;
+  } else if (e.type === 'washplant') {
+    h += bar(e.wact ? e.prog : 0) + kv('Feed', `${(e.inb.bauxite || 0).toFixed(1)} t · ${assay(S.gradeOf(e))}`) + kv('Washed', (e.outb.bauxite || 0) > .05 ? `${e.outb.bauxite.toFixed(1)} t · ${assay(S.gradeOf(e, 'oga', 'ogs'))}` : '—') +
+      (e.batch ? kv('Mass to tailings', `${(e.batch[3] * 100).toFixed(0)} %`) : '') + kv('Water', invList(e.fin, DEFS.washplant.flim, true)) + kv('Tailings', invList(e.fout, null, true)) + kv('Power', `${d.power} MW`) + `<div class="desc">${d.desc}</div>`;
+  } else if (e.type === 'tailings') {
+    h += kv('Stored', `${fmt(e.fill)} / ${fmt(S.TAIL_CAP)}`) + bar(e.fill / S.TAIL_CAP, '#a0805a') + `<div class="desc">${d.desc}</div>`;
+  } else if (e.type === 'grader') {
+    const worn = ents.filter(r => r.type === 'road' && (r.wear || 0) > .12 && Math.abs(r.x - e.x - 1) + Math.abs(r.y - e.y - 1) <= S.GRADER_R).length;
+    h += kv('Rutted roads in range', `${worn}`) + kv('Range', `${S.GRADER_R} tiles`) + `<div class="desc">${d.desc}</div>`;
   } else if (e.type === 'oilwell') {
     let r = 0; for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) { const k = e.x + i + (e.y + j) * W; if (oreType[k] === 'oil') r += oreAmt[k]; }
     h += kv('Reservoir', fmt(r) + ' units') + `<div class="desc">${d.desc}</div>`;
@@ -2035,6 +2236,7 @@ function entPanel(e) {
   else if (e.type === 'sentry') h += kv('Rounds', `${e.rounds}`) + bar(Math.min(1, e.rounds / 60), '#f2b431') + kv('Crates', `${e.inb.ammo || 0} / 2`) + kv('Range', `${S.SENTRY_R} tiles`) + kv('Rate', '80 rounds/min') + `<div class="desc">${d.desc}</div>`;
   else if (e.type === 'turret') h += kv('Rounds', `${e.rounds} / 40`) + bar(e.rounds / 40, '#f2b431') + kv('Crates', `${e.inb.ammo || 0} / 4`) + kv('Range', `${S.TURRET_R} tiles`) + `<div class="desc">${d.desc}</div>`;
   if (e.hp !== undefined) h += kv('Integrity', `${Math.round(e.hp)} / ${S.entHpMax(e)}`, 'bad') + bar(e.hp / S.entHpMax(e), '#e2483a');
+  if (e.type === 'mill') { const g = S.gradeOf(e); h += kv('Feed assay', assay(g)) + kv('Slurry per batch', `${(40 * g[0] / 47).toFixed(1)} <span class="dim">(40 at 47 % Al₂O₃)</span>`) + kv('Liquor lost to silica', `${(g[1] * 1.6).toFixed(1)} per batch`, g[1] > 6 ? 'warn' : ''); }
   if (d.recipes) {
     if (e.prog !== undefined) h += bar(e.active ? e.prog : 0);
     h += `<div class="sec">Recipe</div>` + d.recipes.map(r => `<div class="rcp">${fmtRecipe(r)}</div>`).join('');
@@ -2071,11 +2273,13 @@ function updateHover() {
   else if (targeting) txt = `<b>Strike (${tx}, ${ty})</b> · ${S.BLAST_R}-tile blast`;
   else if (t) txt = `<b>Haul truck</b> · <span class="${statusCls(t.status)}">${esc(t.status)}</span>`;
   else if (hi) txt = `<b>Bug colony</b> · brood ${hi.pop.toFixed(1)}`;
+  else if (e && e.type === 'road') { const wr = e.wear || 0; txt = `<b>Haul road</b> · ${wr < .05 ? 'smooth' : Math.round(wr * 100) + ' % rutted'} · ${S.elevAt(tx + ty * W).toFixed(1)} m`; }
   else if (e) { const n = e.net; txt = `<b>${DEFS[e.type].n}</b>` + (n ? ` · ${n.fluid ? FLUIDS[n.fluid].n : 'empty'} ${Math.round(n.amt)}/${n.cap}` : e.status && e.type !== 'road' && !['belt'].includes(e.type) ? ` · <span class="${statusCls(e.status)}">${esc(e.status)}</span>` : ''); }
   else if (tx >= 0 && ty >= 0 && tx < W && ty < H) {
     const i = tx + ty * W;
     if (creep[i]) txt = 'Infested ground';
-    else if (oreType[i]) txt = oreType[i] === 'oil' ? `Oil seep · ${fmt(oreAmt[i])} units` : `${ITEMS[oreType[i]].n} · ${fmt(oreAmt[i])} t${ob[i] > 0 ? ` · ${ob[i].toFixed(0)} t overburden` : ''}`;
+    else if (oreType[i]) txt = oreType[i] === 'oil' ? `Oil seep · ${fmt(oreAmt[i])} units` : tileInfo(i);
+    else if (S.oreInit[i] && S.oreInit[i] !== 'oil') txt = `Worked-out pit floor · ${S.depthM(i).toFixed(1)} m deep`;
   }
   if (!txt) { hv.style.display = 'none'; return; }
   hv.innerHTML = txt; hv.style.display = 'block'; hv.style.left = (mx + 16) + 'px'; hv.style.top = (my + 18) + 'px';
@@ -2114,7 +2318,7 @@ function renderGuide() {
   $('guide').innerHTML = `<h3>Field manual<span class="x" onclick="document.getElementById('guide').classList.remove('on')">×</span></h3><div class="b">
 <h4>You</h4><p>You are an engineer on foot. <kbd>WASD</kbd> walk (<kbd>Shift</kbd> to hurry), mouse wheel zoom. You can only build or demolish within ${REACH} tiles of yourself. Belts carry you; roads are walkable. <kbd>Tab</kbd> / <kbd>1-9</kbd> pick a building, <kbd>R</kbd> rotate, <kbd>Q</kbd> copy the hovered building, right-click demolish (full refund), click to inspect, <kbd>Enter</kbd> chat, <kbd>M</kbd> minimap.</p>
 <h4>Materials, not money</h4><p>Nothing is bought or sold. Every building costs <b>precast concrete</b>, <b>aluminium extrusions</b> and <b>machinery kits</b> from the team's <b>site stores</b> (shown top-left); demolishing returns everything. Make concrete from limestone (cement kiln → batching plant), extrusions from your own ingots (extrusion press), and requisition kits at a <b>supply depot</b>. Inserting anything into a site stores building adds it to the stockpile. Depots deliver one allocation each at a fixed rate; several depots on the same item share it.</p>
-<h4>1 · Mine and haul</h4><p>Bulk solids — bauxite, coal, limestone, coke, hydrate, red mud — move by <b>truck</b>, never by belt. An <b>excavator</b> strips overburden (it does this even with no truck), then loads 4 t/s into a truck waiting on the road at its arrow. The dispatcher sends trucks from excavators, <b>load-out bins</b> and bulk imports to <b>dump hoppers</b> with a matching material, then (red mud) to the residue area. An <b>apron feeder</b> moves 4 t/s from a hopper into a machine, or from a machine into a bin. Trucks keep right; junctions let one truck through at a time unless a <b>signal</b> runs them.</p>
+<h4>1 · Mine and haul</h4><p>Hover over ore to read it: tonnes, hardness and, for bauxite, the assay. Drag a <b>pit outline</b> over the best ground (Mining tab). An <b>excavator</b> strips the soft overburden to a spoil heap, then digs the pit bench by bench in 12 m³ bucket passes. Hard caprock and limestone dig at a crawl until a <b>drill rig</b> blasts them; it needs ANFO crates from a depot. Dug ore is <b>run-of-mine</b> lumps: trucks tip it at a <b>primary crusher</b>, and a <b>wash plant</b> can then strip clay and silica from bauxite (tailings go by pipe to a <b>tailings dam</b>). Broken rock swells, so a truck's 60 m³ body limits light loads like coal. Loaded trucks crawl up steep grades and wear ruts into roads; a <b>grader</b> keeps them smooth.</p><p>Bulk solids — bauxite, coal, limestone, coke, hydrate, red mud — move by <b>truck</b>, never by belt. The dispatcher sends trucks from excavators, <b>load-out bins</b> and bulk imports to <b>dump hoppers</b> with a matching material, then (red mud) to the residue area. An <b>apron feeder</b> moves 4 t/s from a hopper into a machine, or from a machine into a bin. Trucks keep right; junctions let one truck through at a time unless a <b>signal</b> runs them.</p>
 <h4>2 · Bayer refinery</h4><div class="eq">Al(OH)₃ + NaOH → NaAl(OH)₄ (145 °C)</div><p>Caustic make-up tank → liquor → <b>ball mill</b> (bauxite by feeder) → slurry → <b>digester</b> (+ steam, lime bags) → <b>settler</b>: pregnant liquor + red mud underflow → <b>washer</b> (mud to bin → truck → residue) and <b>precipitator</b> (hydrate → feeder → bin → truck → hopper → <b>calciner</b>). Liquor goes back to the mill.</p><div class="eq">2 Al(OH)₃ → Al₂O₃ + 3 H₂O (1,050 °C)</div>
 <h4>3 · Smelter</h4><div class="eq">2 Al₂O₃ + 3 C → 4 Al + 3 CO₂ (960 °C, 4.2 V)</div><p>Alumina travels by dense-phase pneumatic pipe from the calciner to each <b>reduction cell</b>. Inserters feed anodes, cryolite and AlF₃. Cells get first call on power; below 85 % they cool, and if one stays under 880 °C for 10 s it freezes for good. Crucibles → <b>casthouse</b> → ingots.</p>
 <h4>4 · Oil and propellants</h4><p><b>Oil well</b> on a black seep → crude → <b>crude distillation unit</b> (+ steam) → naphtha, kerosene and vacuum residue. Residue goes to the <b>delayed coker</b>, which makes pet coke for your anodes. Naphtha + steam → <b>reformer</b> → H₂. Kerosene + H₂ → <b>hydrotreater</b> → <b>RP-1</b>. The <b>air separation unit</b> (6 MW!) makes <b>LOX</b>.</p>
@@ -2138,15 +2342,23 @@ const CHAINS = [
       { t: 'Supply depot set to Ammunition (20 crates/min), with an inserter into each sentry or turret. Belts can carry crates along a turret line.', on: ['dep', 'tur', 'sen'], tool: 'depot', done: () => ents.some(e => e.type === 'depot' && e.sel === 'ammo') },
       { t: 'Raiders go for the nearest building to their colony. Click a bug to shoot it yourself (12 tiles). In the end, only rockets wipe out the colonies.', on: ['hive', 'tur'] },
     ] },
-  { name: 'Mining & haulage', blurb: 'Bulk ore moves by truck, never by belt.',
-    nodes: [['ore', '@Bauxite face:bauxite', 0, 1], ['exc', 'excavator', 1, 1], ['road', 'road', 1.5, 0, 'Haul road'], ['hop', 'hopper', 2, 1, 'Dump hopper'], ['feed', 'feeder', 3, 1], ['mill', 'mill', 4, 1]],
-    edges: [['ore', 'exc', 'ore', 'dig'], ['exc', 'hop', 'bauxite', 'truck'], ['hop', 'feed', 'bauxite', 'feeder'], ['feed', 'mill', 'bauxite', 'feeder'], ['road', 'exc', '', 'adj'], ['road', 'hop', '', 'adj']],
+  { name: 'Open-pit mine', blurb: 'Strip, drill, blast, dig, haul, crush, wash.',
+    nodes: [['ore', '@Ore body:bauxite', 0, 1.2], ['pit', 'pit', 0, 0, 'Pit outline'], ['dep', 'depot', 1, 0, 'Depot (ANFO)'], ['drl', 'drill', 1, 1.2, 'Drill rig'], ['exc', 'excavator', 2, 1.2], ['road', 'road', 2.5, 0, 'Haul road'], ['grd', 'grader', 3.5, 0, 'Grader'],
+      ['cru', 'crusher', 3, 1.2], ['fd1', 'feeder', 3.7, 2.2], ['wsh', 'washplant', 4.4, 1.2], ['dam', 'tailings', 4.4, 2.6, 'Tailings dam'], ['mill', 'mill', 5.6, 1.2]],
+    edges: [['pit', 'ore', '', 'adj'], ['dep', 'drl', 'anfo', 'ins'], ['drl', 'ore', 'blast', 'dig'], ['ore', 'exc', 'broken rock', 'dig'], ['exc', 'cru', 'rombx', 'truck'], ['road', 'exc', '', 'adj'], ['road', 'cru', '', 'adj'], ['grd', 'road', 'grading', 'adj'],
+      ['cru', 'wsh', 'bauxite', 'feeder'], ['wsh', 'dam', 'tailings', 'pipe'], ['wsh', 'mill', 'bauxite', 'feeder']],
     steps: [
-      { t: 'Lay a haul road past a bauxite face and on toward the refinery site. Roads are free; drag to lay them. Trucks keep right.', on: ['road'], tool: 'road' },
-      { t: 'Place an excavator next to the ore with its arrow (the truck bay) on the road. It strips overburden first, then digs everything within 3 tiles.', on: ['ore', 'exc', 'road'], tool: 'excavator' },
-      { t: 'Place a dump hopper with its arrow facing the road. Click it and set it to Bauxite.', on: ['hop', 'road'], tool: 'hopper', done: () => ents.some(e => e.type === 'hopper' && e.mat) },
-      { t: 'Put a haul truck on the road. The dispatcher runs it from shovel to hopper automatically. Use up to 3 trucks per excavator.', on: ['exc', 'hop'], tool: 'truck' },
-      { t: 'Point an apron feeder out of the hopper into the ball mill. It moves 4 t/s from behind it to in front.', on: ['hop', 'feed', 'mill'], tool: 'feeder' },
+      { t: 'Hover over ore to read it: tonnes, hardness, and for bauxite the assay (Al₂O₃ is what you sell; reactive SiO₂ eats caustic). Drag a pit outline over the best ground. Shovels and drills that reach a pit work only inside it, one bench at a time.', on: ['pit', 'ore'], tool: 'pit', done: () => S.pit.some(v => v) },
+      { t: 'Lay a haul road past the pit and on toward the plant. Roads are free. Keep ramps gentle: a loaded truck crawls up a steep grade and burns far more fuel.', on: ['road'], tool: 'road' },
+      { t: 'Place an excavator at the face with its arrow (the truck bay) on the road. It strips the soft overburden to a spoil heap first, then digs in 12 m³ bucket passes.', on: ['ore', 'exc', 'road'], tool: 'excavator' },
+      { t: 'Hard caprock and limestone dig at a crawl until blasted. Put a drill rig within 6 tiles of the stripped rock. It drills a pattern of 6 holes, then fires.', on: ['drl', 'ore'], tool: 'drill' },
+      { t: 'Set a supply depot to ANFO and inserter the crates into the drill rig\'s magazine: one crate charges two holes.', on: ['dep', 'drl'], done: () => ents.some(e => e.type === 'depot' && e.sel === 'anfo') },
+      { t: 'Build a primary crusher beside the road. Dug ore is run-of-mine (ROM) lumps: trucks tip it on the crusher\'s 300 t pad, and nothing downstream takes ROM.', on: ['cru', 'road'], tool: 'crusher' },
+      { t: 'Put haul trucks on the road. Each takes 60 m³: about 87 t of bauxite or limestone, but only 54 t of coal, which fills the body before the scales.', on: ['exc', 'cru'], tool: 'truck' },
+      { t: 'Feeder from the crusher into a bauxite wash plant (water in, south). It sheds clay and fines: higher Al₂O₃, half the silica gone. Pipe the tailings to a tailings dam.', on: ['cru', 'fd1', 'wsh', 'dam'], tool: 'washplant' },
+      { t: 'Tailings dam on the end of the tailings pipe (its port is on the south side).', on: ['wsh', 'dam'], tool: 'tailings' },
+      { t: 'Feeder from the wash plant into the ball mill (or into a load-out bin for trucks). Richer, cleaner ore gives more slurry per batch and costs less liquor.', on: ['wsh', 'mill'], tool: 'feeder' },
+      { t: 'Loaded trucks wear ruts into the road, which slow them and burn fuel. A grader shed sends a grader to cut the ruts out of roads within 28 tiles.', on: ['grd', 'road'], tool: 'grader' },
       { t: 'Where roads cross, a traffic signal lets trucks take turns instead of queueing for the box.', on: ['road'], tool: 'signal' },
     ] },
   { name: 'Water & power', blurb: 'One pipe network = one fluid.',
@@ -2253,6 +2465,9 @@ function portHint(type) {
   const side = ['north', 'east', 'south', 'west'];
   const parts = (d.ports || []).map(p => `<span class="sw" style="background:${FLUIDS[p.f].col}"></span>${FLUIDS[p.f].n} ${p.io === 'in' ? 'in' : 'out'} on the ${side[p.d]}`);
   if (type === 'excavator') parts.push('truck bay 2 tiles out on the arrow side');
+  if (type === 'crusher') parts.push('trucks tip from any adjacent road');
+  if (type === 'drill') parts.push('drills stripped hard rock within 6 tiles; ANFO by inserter');
+  if (type === 'grader') parts.push('road beside the shed');
   if (type === 'hopper' || type === 'bin') parts.push('road on the arrow side');
   if (type === 'feeder' || type === 'inserter') parts.push('takes from behind, delivers in front');
   if (type === 'pump') parts.push('back to the water');
@@ -2364,7 +2579,8 @@ function render(dt, frac) {
   const pxs = Math.max(1, ART_PX * cam.z), kz = cam.z / pxs;
   const lw = Math.ceil(vw / pxs) + 1, lh = Math.ceil(vh / pxs) + 1;
   if (pcv.width !== lw || pcv.height !== lh) { pcv.width = lw; pcv.height = lh; }
-  const ox = Math.round(vw / 2 / pxs - cam.x * kz), oy = Math.round(vh / 2 / pxs - cam.y * kz);
+  shake = Math.max(0, shake - dt); const sk = shake > 0 ? shake * 6 : 0;
+  const ox = Math.round(vw / 2 / pxs - cam.x * kz + (Math.random() - .5) * sk), oy = Math.round(vh / 2 / pxs - cam.y * kz + (Math.random() - .5) * sk);
   let c = pc;
   c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = '#141210'; c.fillRect(0, 0, lw, lh);
   c.setTransform(kz, 0, 0, kz, ox, oy);
@@ -2381,7 +2597,9 @@ function render(dt, frac) {
     line(c, x * T + ox - 5, y * T + 8 + h * 16, x * T + ox + 3, y * T + 8 + h * 16);
   }
   drawCreep(c, Math.max(0, x0 - 1), Math.max(0, y0 - 1), Math.min(W, x1 + 1), Math.min(H, y1 + 1));
-  const vis = ents.filter(e => { const [fw, fh] = fp(e.type, e.dir); return e.x + fw >= x0 && e.x <= x1 && e.y + fh >= y0 - 6 && e.y <= y1; });
+  drawPits(c, x0, y0, x1, y1);
+  const vis = ents.filter(e => { const [fw, fh] = fp(e.type, e.dir); return e.x + fw >= x0 - 8 && e.x <= x1 + 8 && e.y + fh >= y0 - 8 && e.y <= y1 + 8; });
+  for (const e of vis) if (e.type === 'drill') drawHoles(c, e);
   for (const r of vis) if (r.type === 'road') drawRoad(c, r);
   for (const p of vis) if (p.type === 'pipe' || p.type === 'ptg') drawPipe(c, p);
   const belts = vis.filter(e => e.type === 'belt');
@@ -2405,6 +2623,7 @@ function render(dt, frac) {
     if ((working(e) || (e.type === 'powerplant' && e.gen > 0) || (e.type === 'pot' && e.T > 600 && !e.frozen)) && DEFS[e.type].stacks) spawnStacks(e);
   }
   for (const e of bld) if (e.type === 'inserter') drawInserterArm(c, e);
+  for (const e of vis) if (e.type === 'drill') drawRig(c, e, dt); else if (e.type === 'grader') drawGrader(c, e, dt);
   for (const sp of splats) { c.fillStyle = `rgba(90,40,20,${.5 * (1 - sp.t / 60)})`; circle(c, sp.x, sp.y, 6 + sp.r); c.fill(); }
   for (const e of bld) if (e.type === 'turret') drawTurretTop(c, e); else if (e.type === 'sentry') drawSentryTop(c, e);
   for (const b of bugs) if (b.x >= x0 - 2 && b.x <= x1 + 2 && b.y >= y0 - 2 && b.y <= y1 + 2) drawBug(c, b, dt); else b._x = undefined;
@@ -2417,6 +2636,8 @@ function render(dt, frac) {
   for (const bm of beams) { c.strokeStyle = bm.col; c.globalAlpha = bm.t / .35 * .7; c.lineWidth = 2; c.setLineDash([4, 4]); c.lineDashOffset = -time * 40; line(c, bm.x0, bm.y0, bm.x1, bm.y1); c.setLineDash([]); c.globalAlpha = 1; }
   for (const p of particles) {
     const t = p.life / p.max;
+    if (p.k === 'fly') { c.fillStyle = `rgba(60,40,28,${1 - t})`; c.fillRect(p.x - p.r / 2, p.y - p.r / 2, p.r, p.r); continue; }
+    if (p.k === 'blastdust') { c.fillStyle = `rgba(176,150,120,${.38 * (1 - t)})`; circle(c, p.x, p.y, p.r * (1 + t * 2.5)); c.fill(); continue; }
     c.fillStyle = p.k === 'steam' ? `rgba(240,240,240,${.32 * (1 - t)})` : p.k === 'dust' ? `rgba(150,70,35,${.3 * (1 - t)})` : p.k === 'fire' ? (t < .3 ? `rgba(255,${200 - t * 400},60,${.8 * (1 - t)})` : `rgba(60,50,45,${.5 * (1 - t)})`) : `rgba(62,58,54,${.45 * (1 - t)})`;
     circle(c, p.x, p.y, p.r * (p.k === 'fire' ? 1 + t * 2 : 1)); c.fill();
   }
@@ -2444,7 +2665,15 @@ function render(dt, frac) {
   } else if (tool && !overUI) {
     if (tool === 'pipe' || tool === 'ptg') for (const e of vis) if (e.ports && e.ports.length) drawPortArrows(c, e);
     c.strokeStyle = 'rgba(255,255,255,.12)'; c.lineWidth = 1.5 / cam.z; c.setLineDash([6, 6]); circle(c, me.x * T, me.y * T, REACH * T); c.stroke(); c.setLineDash([]);
-    if (tool === 'truck' || tool === 'signal') {
+    if (tool === 'pit') {
+      const [sx, sy] = pitDrag || [tx, ty], ax = Math.min(sx, tx), ay = Math.min(sy, ty), bw = Math.abs(tx - sx) + 1, bh = Math.abs(ty - sy) + 1;
+      const erase = pitDrag && S.pit[sx + sy * W], big = bw > 41 || bh > 41;
+      c.fillStyle = big ? 'rgba(220,40,30,.3)' : erase ? 'rgba(220,120,60,.22)' : 'rgba(255,206,74,.18)'; c.fillRect(ax * T, ay * T, bw * T, bh * T);
+      c.strokeStyle = big ? '#ff6a50' : '#ffce4a'; c.lineWidth = 2 / cam.z; c.setLineDash([8, 5]); c.strokeRect(ax * T, ay * T, bw * T, bh * T); c.setLineDash([]);
+      let ore = 0; for (let y = ay; y < ay + bh && y < H; y++) for (let x = ax; x < ax + bw && x < W; x++) if (S.isOre(x + y * W)) ore += oreAmt[x + y * W];
+      c.save(); c.translate((ax + bw / 2) * T, ay * T - 8); c.scale(1 / cam.z, 1 / cam.z);
+      stencil(c, `${bw} × ${bh}${erase ? ' · erase' : ore ? ' · ' + fmt(ore) + ' t ore' : ''}`, 0, 0, 12, '#ffe7a0'); c.restore();
+    } else if (tool === 'truck' || tool === 'signal') {
       const ok = tool === 'truck' ? (get(tx, ty) && get(tx, ty).type === 'road') : S.isJunction(tx + ty * W);
       c.fillStyle = ok && inReach(tx, ty) && S.canAfford(costOf(tool)) ? 'rgba(100,220,100,.3)' : 'rgba(220,40,30,.35)'; c.fillRect(tx * T, ty * T, T, T);
       if (tool === 'truck') { c.save(); c.translate((tx + .5) * T, (ty + .5) * T); c.rotate(rot * PI / 2); c.globalAlpha = .6; drawTruckShape(c, 0, null, 0); c.restore(); c.globalAlpha = 1; }
@@ -2460,6 +2689,8 @@ function render(dt, frac) {
         c.fillStyle = 'rgba(240,200,60,.12)'; for (const i of excTiles(ax, ay)) if (oreType[i] && oreType[i] !== 'oil') c.fillRect((i % W) * T, (i / W | 0) * T, T, T);
         c.fillStyle = 'rgba(100,220,100,.35)'; c.fillRect((ax + 1 + DX[rot] * 2) * T + 2, (ay + 1 + DY[rot] * 2) * T + 2, T - 4, T - 4); stencil(c, 'TRUCK BAY', (ax + 1.5 + DX[rot] * 2) * T, (ay + 1.6 + DY[rot] * 2) * T, 5, '#fff');
       }
+      if (tool === 'drill') { c.strokeStyle = 'rgba(255,206,74,.6)'; c.lineWidth = 2 / cam.z; c.setLineDash([6, 5]); circle(c, (ax + 1) * T, (ay + 1) * T, S.DRILL_R * T); c.stroke(); c.setLineDash([]); }
+      if (tool === 'grader') { const r = S.GRADER_R * T, cx = (ax + 1) * T, cy = (ay + 1) * T; c.strokeStyle = 'rgba(200,180,120,.45)'; c.lineWidth = 2 / cam.z; c.setLineDash([6, 5]); c.beginPath(); c.moveTo(cx, cy - r); c.lineTo(cx + r, cy); c.lineTo(cx, cy + r); c.lineTo(cx - r, cy); c.closePath(); c.stroke(); c.setLineDash([]); }
       if (tool === 'hopper' || tool === 'bin') { c.fillStyle = 'rgba(100,220,100,.3)'; for (const [x, y] of sideTilesOf(ax, ay, fw, fh, rot)) c.fillRect(x * T + 2, y * T + 2, T - 4, T - 4); }
       if (tool === 'pump') { c.fillStyle = isWater(ax - DX[rot], ay - DY[rot]) ? 'rgba(100,180,240,.3)' : 'rgba(220,40,30,.3)'; c.fillRect((ax - DX[rot]) * T + 2, (ay - DY[rot]) * T + 2, T - 4, T - 4); }
       c.globalAlpha = .55; if (tool === 'road') drawRoad(c, g); else drawAny(c, g, time, true); c.globalAlpha = 1;
@@ -2480,6 +2711,72 @@ function render(dt, frac) {
   c.fillStyle = vg; c.fillRect(0, 0, vw, vh);
 }
 const BLAST = () => S.BLAST_R;
+let shake = 0;
+function drawPits(c, x0, y0, x1, y1) {
+  const pit = S.pit; let any = false;
+  c.beginPath();
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (!pit[x + y * W]) continue; any = true;
+    if (y === 0 || !pit[x + (y - 1) * W]) { c.moveTo(x * T, y * T); c.lineTo(x * T + T, y * T); }
+    if (y === H - 1 || !pit[x + (y + 1) * W]) { c.moveTo(x * T, y * T + T); c.lineTo(x * T + T, y * T + T); }
+    if (x === 0 || !pit[x - 1 + y * W]) { c.moveTo(x * T, y * T); c.lineTo(x * T, y * T + T); }
+    if (x === W - 1 || !pit[x + 1 + y * W]) { c.moveTo(x * T + T, y * T); c.lineTo(x * T + T, y * T + T); }
+  }
+  if (!any) return;
+  c.strokeStyle = 'rgba(20,14,6,.5)'; c.lineWidth = 4; c.stroke();
+  c.strokeStyle = 'rgba(255,206,74,.85)'; c.lineWidth = 2; c.setLineDash([7, 5]); c.stroke(); c.setLineDash([]);
+}
+function drawHoles(c, e) {
+  const blink = e.fuse > 0 && (time * 4 | 0) % 2 === 0;
+  for (const k of e.holes) {
+    const x = (k % W + .5) * T, y = ((k / W | 0) + .5) * T;
+    for (const [ox, oy] of [[-8, -8], [8, -8], [0, 0], [-8, 8], [8, 8]]) {
+      c.fillStyle = 'rgba(200,180,150,.6)'; circle(c, x + ox, y + oy, 3); c.fill();
+      c.fillStyle = '#120c08'; circle(c, x + ox, y + oy, 1.6); c.fill();
+      if (e.fuse > 0) { c.fillStyle = blink ? '#ff5a2a' : '#e8c020'; c.fillRect(x + ox - .5, y + oy - 4, 1, 3); }
+    }
+  }
+  if (e.fuse > 0) {
+    const r = (S.DRILL_R + 2) * T, cx = (e.x + 1) * T, cy = (e.y + 1) * T;
+    c.strokeStyle = blink ? 'rgba(255,70,40,.8)' : 'rgba(255,200,40,.6)'; c.lineWidth = 2; c.setLineDash([10, 8]); circle(c, cx, cy, r); c.stroke(); c.setLineDash([]);
+  }
+}
+// tracked blast-hole drill: lattice mast laid along the body while tramming, standing while it drills
+function drawRig(c, e, dt) {
+  const want = Math.atan2(e.rhx || 0, -(e.rhy === undefined ? -1 : e.rhy));
+  e._ra = e._ra === undefined ? want : angLerp(e._ra, want, Math.min(1, dt * 5));
+  const drilling = (e.status || '').startsWith('Drilling');
+  c.save(); c.translate(e.lx * T, e.ly * T); c.rotate(e._ra);
+  c.fillStyle = 'rgba(0,0,0,.32)'; rrect(c, -10, -14, 26, 34, 4); c.fill();
+  for (const sx of [-12, 7]) { c.fillStyle = '#1e1c19'; rrect(c, sx, -15, 6, 30, 3); c.fill(); c.fillStyle = '#3d3934'; for (let k = -13; k < 14; k += 4) c.fillRect(sx + 1, k, 4, 2); }
+  body(c, -7, -12, 15, 26, 3, '#c9a227', '#7d6214');
+  c.fillStyle = '#2a2622'; rrect(c, -5, 6, 10, 7, 2); c.fill(); c.fillStyle = '#7ab4d8'; c.fillRect(-4, 7, 8, 3);
+  c.fillStyle = '#a82a26'; c.fillRect(-7, 2, 15, 2);
+  if (drilling) {   // mast up: seen from above it is a short tower with the rotary head on top
+    c.fillStyle = '#3a3a36'; c.fillRect(-4, -14, 8, 8); c.strokeStyle = '#d9b43a'; c.lineWidth = 1; c.strokeRect(-4, -14, 8, 8); line(c, -4, -14, 4, -6); line(c, 4, -14, -4, -6);
+    c.fillStyle = '#e8e2d0'; circle(c, 0, -10, 2); c.fill();
+    if (Math.random() < .5 && particles.length < 800) { const a = e._ra; particles.push({ x: e.lx * T + Math.sin(a) * 10, y: e.ly * T - Math.cos(a) * 10, vx: (Math.random() - .5) * .6, vy: -.25, life: 0, max: 50, r: 3, k: 'blastdust' }); }
+  } else {
+    c.strokeStyle = '#d9b43a'; c.lineWidth = 1.2; c.strokeRect(-2.5, -24, 5, 30);
+    for (let k = -24; k < 6; k += 5) line(c, -2.5, k, 2.5, k + 5);
+  }
+  c.restore();
+}
+function drawGrader(c, e, dt) {
+  if (e.gt < 0) return;
+  const a = e.gt, b = e.gn >= 0 ? e.gn : a, p = e.gn >= 0 ? e.gp : 0;
+  const x = ((a % W + .5) + ((b % W) - (a % W)) * p) * T + DX[(e.gh + 1) % 4] * 9, y = (((a / W | 0) + .5) + ((b / W | 0) - (a / W | 0)) * p) * T + DY[(e.gh + 1) % 4] * 9;
+  e._ga = e._ga === undefined ? e.gh * PI / 2 : angLerp(e._ga, e.gh * PI / 2, Math.min(1, dt * 6));
+  c.save(); c.translate(x, y); c.rotate(e._ga);
+  c.fillStyle = 'rgba(0,0,0,.3)'; c.fillRect(-6, -15, 15, 32);
+  c.fillStyle = '#151513'; for (const [wx, wy] of [[-7, -13], [4, -13], [-7, 8], [4, 8], [-7, 12], [4, 12]]) c.fillRect(wx, wy, 3, 4);
+  c.fillStyle = '#c9a227'; c.fillRect(-1.5, -14, 3, 20);
+  body(c, -5, 5, 10, 11, 2, '#c9a227', '#7d6214');
+  c.fillStyle = '#2a2622'; c.fillRect(-4, 6, 8, 5); c.fillStyle = '#7ab4d8'; c.fillRect(-3, 6.5, 6, 2);
+  c.save(); c.rotate(.35); c.fillStyle = '#8a8d90'; c.fillRect(-10, -3, 20, 2.5); c.restore();
+  c.restore();
+  if (e.status === 'Grading road' && Math.random() < .3) particles.push({ x, y, vx: (Math.random() - .5) * .3, vy: -.15, life: 0, max: 50, r: 4, k: 'dust' });
+}
 function sideTilesOf(x, y, fw, fh, side) {
   const out = [];
   if (side === 0) for (let i = 0; i < fw; i++) out.push([x + i, y - 1]);
@@ -2509,7 +2806,7 @@ function frame(now) {
   }
   const kc = Math.min(1, dt * 7);
   cam.x += (me.x * T - cam.x) * kc; cam.y += (me.y * T - cam.y) * kc;
-  for (let i = particles.length - 1; i >= 0; i--) { const p = particles[i]; p.x += p.vx; p.y += p.vy; if (p.k === 'fire') { p.vx *= .97; p.vy *= .97; } if (++p.life > p.max) particles.splice(i, 1); }
+  for (let i = particles.length - 1; i >= 0; i--) { const p = particles[i]; p.x += p.vx; p.y += p.vy; if (p.k === 'fire' || p.k === 'blastdust') { p.vx *= .97; p.vy *= .97; } if (p.g) { p.vy += p.g; p.vx *= .985; } if (++p.life > p.max) particles.splice(i, 1); }
   for (let i = tracers.length - 1; i >= 0; i--) if ((tracers[i].t -= dt) <= 0) tracers.splice(i, 1);
   for (let i = splats.length - 1; i >= 0; i--) if ((splats[i].t += dt) > 60) splats.splice(i, 1);
   for (let i = beams.length - 1; i >= 0; i--) if ((beams[i].t -= dt) <= 0) beams.splice(i, 1);

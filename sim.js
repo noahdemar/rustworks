@@ -27,12 +27,33 @@ const BUG_HP = 3, BUG_SPEED = 1.6 / 60, BUG_DPS = 8, MAX_BUGS = 160;
 const RAID_START = 60 * 60 * 10;     // 10 minutes' grace before the first raids
 const TURRET_R = 9, TURRET_ROUNDS = 40, SHOOT_R = 12;
 const SENTRY_R = 6, SENTRY_COOL = 45, SENTRY_START = 60;   // tripod: 0.75 s between shots
+// ---- mining physics
+const BUCKET_M3 = 12;                                   // excavator bucket, heaped
+const EXC_CYCLE = 300, STRIP_CYCLE = 240, REHANDLE_CYCLE = 240;   // ticks per dig-swing-dump-return cycle
+const TRUCK_M3 = 60;                                    // heaped body volume: light ore fills the body before the scales
+// loose (broken) density, t/m³. In situ rock is 30-40 % denser: it swells when blasted and dug.
+const DENS = { bauxite: 1.45, coal: .9, limestone: 1.6, coke: .7, gibbsite: 1, redmud: 1.3, rombx: 1.45, romcoal: .9, romlime: 1.6 };
+const SWELL = { bauxite: 1.38, coal: 1.35, limestone: 1.6 };
+const capOf = m => Math.min(TRUCK_CAP, Math.floor(TRUCK_M3 * (DENS[m] || 1.4)));
+const ROM_OF = { bauxite: 'rombx', coal: 'romcoal', limestone: 'romlime' };
+const CRUSHED = { rombx: 'bauxite', romcoal: 'coal', romlime: 'limestone' };
+const ROM_PAD = 300, CRUSH_RATE = 5;                    // t on the run-of-mine pad; t/s through the jaw
+const BENCH_T = 300;                                    // tonnes per bench lift on one tile
+const DRILL_R = 6, DRILL_T = 240, PATTERN = 6, FUSE = 240;   // a pattern of 6 holes takes 1 ANFO crate per 2 holes
+const GRADER_R = 28, GRADER_SPEED = 1.6 / 60, TAIL_CAP = 50000;
+const DEF_G = [46, 5];                                  // Al₂O₃ %, reactive SiO₂ % of bauxite of unknown origin
+const GRADED = new Set(['bauxite', 'rombx']);
+const TILE_M = 10;                                      // a tile is 10 m across
 
 // =====================================================================
 //  items & fluids
 // =====================================================================
 const ITEMS = {
   bauxite:   { n: 'Bauxite', u: 't', d: 'Lateritic ore: gibbsite Al(OH)₃ and boehmite with Fe₂O₃ (the red), SiO₂ and TiO₂. ~45–50 % Al₂O₃.' },
+  rombx:     { n: 'ROM bauxite', u: 't', d: 'Run-of-mine bauxite: dug lumps up to a metre, clay and caprock. Crush it before it goes anywhere.' },
+  romcoal:   { n: 'ROM coal', u: 't', d: 'Run-of-mine coal with shale partings, straight from the face. Crush it before use.' },
+  romlime:   { n: 'ROM limestone', u: 't', d: 'Blasted limestone in big lumps. Crush it before use.' },
+  anfo:      { n: 'ANFO (crate)', d: 'Ammonium nitrate / fuel oil blasting agent with boosters and detonators. One crate charges two blast holes.' },
   coal:      { n: 'Coal', u: 't', d: 'Thermal coal: fuel for boilers, kilns, the calciner and the power station.' },
   limestone: { n: 'Limestone', u: 't', d: 'CaCO₃. Burned in the lime kiln to quicklime.' },
   coke:      { n: 'Calcined pet coke', u: 't', d: 'Anode aggregate, ~65 % of the paste.' },
@@ -70,7 +91,7 @@ const ITEMS = {
   rocket:    { n: 'Launch vehicle', d: '4-engine kerolox rocket. Rolls out to an adjacent launch pad.' },
 };
 // Bulk solids go by truck and feeder. Unit loads go by belt and inserter.
-const BULK = new Set(['bauxite', 'coal', 'limestone', 'coke', 'gibbsite', 'redmud']);
+const BULK = new Set(['bauxite', 'coal', 'limestone', 'coke', 'gibbsite', 'redmud', 'rombx', 'romcoal', 'romlime']);
 const NOHANDLE = new Set(['rocket']);   // moved by crawler, never by inserter
 const FLUIDS = {
   water:     { n: 'Water', col: '#3d8fd1' },
@@ -88,9 +109,10 @@ const FLUIDS = {
   hydrogen:  { n: 'Hydrogen', col: '#e04f9a' },
   rp1:       { n: 'RP-1', col: '#f08a24' },
   lox:       { n: 'Liquid oxygen', col: '#7fd4ff' },
+  tailings:  { n: 'Wash tailings', col: '#a0805a' },
 };
 // No money: supply allocations deliver imports at fixed rates (units or tonnes per minute, per depot).
-const ALLOC = { kit: 4, caustic: 30, flocculant: 12, pitch: 20, cryolite: 15, alf3: 15, coke: 60, coal: 120, limestone: 90, lithium: 4, copper: 6, superalloy: 6, avionics: 1.5, paykit: 1, ammo: 20 };
+const ALLOC = { kit: 4, caustic: 30, flocculant: 12, pitch: 20, cryolite: 15, alf3: 15, coke: 60, coal: 120, limestone: 90, lithium: 4, copper: 6, superalloy: 6, avionics: 1.5, paykit: 1, ammo: 20, anfo: 12 };
 const IMPORTS = Object.keys(ALLOC);
 const START_STORES = { concrete: 400, alu: 300, kit: 160 };
 const MATS = ['concrete', 'alu', 'kit'];
@@ -112,6 +134,13 @@ const DEFS = {
   bin:       { n: 'Load-out bin', w: 2, h: 2, cost: 20000, desc: 'Fill it with an apron feeder; trucks load from the road on its arrow side.' },
   feeder:    { n: 'Apron feeder', w: 1, h: 1, cost: 2500, desc: 'Moves BULK from the tile behind to the tile in front at 4 t/s (hopper → machine, machine → bin).' },
   excavator: { n: 'Hydraulic excavator', w: 3, h: 3, cost: 220000, desc: 'Place on any open land, or drive it (E). Strips overburden, then digs ore within 3 tiles into a truck at its arrow side, or onto a stockpile beside it. Diesel.' },
+  pit:       { n: 'Pit outline', w: 1, h: 1, cost: 0, tool: true, desc: 'Drag a rectangle to lay out an open pit (drag again over it to remove). Excavators and drill rigs that reach the pit work only inside it, bench by bench.' },
+  drill:     { n: 'Drill rig', w: 2, h: 2, cost: 60000, desc: 'Track-mounted blast-hole drill. Drills stripped hard rock within 6 tiles in patterns of 6 holes, charges them with ANFO (by inserter, 1 crate per 2 holes) and fires. Unblasted hard rock digs at a crawl. Diesel.' },
+  crusher:   { n: 'Primary crusher', w: 3, h: 3, cost: 90000, power: 1.2, desc: 'Run-of-mine pad (300 t) and jaw crusher. Trucks tip ROM ore from any adjacent road. Crushed ore leaves by apron feeder at up to 5 t/s.' },
+  washplant: { n: 'Bauxite wash plant', w: 3, h: 4, cost: 70000, power: .6, desc: 'Log washer, scrubber and screens strip clay and fines from crushed bauxite: higher Al₂O₃, about half the reactive silica gone, 8-18 % of the mass lost. Tailings slurry leaves by pipe.',
+               ports: [P(0, 3, 2, 'water', 'in'), P(2, 0, 0, 'tailings', 'out')] },
+  tailings:  { n: 'Tailings dam', w: 5, h: 5, cost: 25000, desc: 'Clay-lined pond with a decant tower. Takes wash tailings by pipe (south port). 50,000 units.', ports: [P(2, 4, 2, 'tailings', 'in')] },
+  grader:    { n: 'Grader shed', w: 2, h: 2, cost: 30000, desc: 'Houses a motor grader. It works haul roads within 28 tiles, cutting out the ruts that slow loaded trucks and burn their fuel. Needs a road beside the shed. Diesel.' },
   pump:      { n: 'Offshore pump', w: 1, h: 1, cost: 8000, desc: 'Place on the shoreline with its back to the water. 60 water/s.', ports: [P(0, 0, 0, 'water', 'out')] },
   substation:{ n: 'Grid connection', w: 2, h: 2, cost: 25000, cap: 30, desc: 'Buys up to 30 MW from the national grid at $20/MW·s. Used after your own generation.' },
   powerplant:{ n: 'Coal power station', w: 5, h: 5, cost: 280000, cap: 25, desc: 'Steam turbine-generator. Coal via apron feeder, plus cooling water. 25 MW.',
@@ -120,7 +149,7 @@ const DEFS = {
                ports: [P(0, 2, 2, 'water', 'in'), P(0, 0, 0, 'steam', 'out')], recipes: [{ t: 4, i: { coal: 1 }, fi: { water: 200 }, fo: { steam: 200 } }], stacks: [[46, 66, 'smoke']] },
   dissolver: { n: 'Caustic make-up tank', w: 2, h: 2, cost: 15000, power: .1, desc: 'Dissolves NaOH bags in water to charge the liquor circuit and replace losses.',
                ports: [P(0, 1, 2, 'water', 'in'), P(1, 0, 0, 'liquor', 'out')], recipes: [{ t: 1, i: { caustic: 1 }, fi: { water: 50 }, fo: { liquor: 50 } }] },
-  mill:      { n: 'Ball mill', w: 3, h: 3, cost: 60000, power: 1.2, desc: 'Wet-grinds bauxite in caustic liquor to a pumpable slurry.',
+  mill:      { n: 'Ball mill', w: 3, h: 3, cost: 60000, power: 1.2, desc: 'Wet-grinds crushed bauxite in caustic liquor to a pumpable slurry. Slurry yield follows the ore\'s Al₂O₃; reactive silica eats extra liquor (desilication product).',
                ports: [P(1, 2, 2, 'liquor', 'in'), P(1, 0, 0, 'slurry', 'out')], recipes: [{ t: 2, i: { bauxite: 2 }, fi: { liquor: 40 }, fo: { slurry: 40 } }] },
   digester:  { n: 'Digester train', w: 3, h: 3, cost: 90000, power: .4, desc: 'Autoclaves at 145 °C dissolve gibbsite into sodium aluminate.',
                ports: [P(0, 2, 2, 'slurry', 'in'), P(2, 2, 2, 'steam', 'in'), P(1, 0, 0, 'digested', 'out')],
@@ -202,7 +231,8 @@ const DEFS = {
 const GROUPS = [
   ['Logistics', ['belt', 'inserter', 'pipe', 'ptg', 'chest']],
   ['Haulage', ['road', 'signal', 'truck', 'hopper', 'bin', 'feeder']],
-  ['Mining & power', ['excavator', 'pump', 'substation', 'powerplant', 'boiler']],
+  ['Mining', ['pit', 'excavator', 'drill', 'crusher', 'washplant', 'tailings', 'grader']],
+  ['Power & water', ['pump', 'substation', 'powerplant', 'boiler']],
   ['Refinery', ['dissolver', 'mill', 'digester', 'clarifier', 'washer', 'precipitator', 'limekiln', 'calciner']],
   ['Smelter', ['paste', 'bake', 'pot', 'casthouse']],
   ['Oil & propellant', ['oilwell', 'distill', 'coker', 'reformer', 'hydrotreater', 'asu']],
@@ -213,7 +243,7 @@ const GROUPS = [
 const POT_IN = { anode: 2, cryolite: 3, alf3: 3 };
 const COSTS = {
   belt: { alu: 1 }, inserter: { alu: 1, kit: 1 }, pipe: { alu: 1 }, ptg: { alu: 2 }, chest: { alu: 2 }, road: {}, signal: { alu: 1, kit: 1 },
-  truck: { alu: 4, kit: 6 }, hopper: { concrete: 6, alu: 2 }, bin: { concrete: 2, alu: 6 }, feeder: { alu: 2, kit: 1 }, excavator: { alu: 4, kit: 8 },
+  truck: { alu: 4, kit: 6 }, hopper: { concrete: 6, alu: 2 }, bin: { concrete: 2, alu: 6 }, feeder: { alu: 2, kit: 1 }, excavator: { alu: 4, kit: 8 }, pit: {}, drill: { alu: 3, kit: 4 }, crusher: { concrete: 8, alu: 3, kit: 4 }, washplant: { concrete: 5, alu: 3, kit: 3 }, tailings: { concrete: 6 }, grader: { concrete: 2, alu: 3, kit: 4 },
   pump: { concrete: 2, kit: 1 }, turret: { concrete: 3, alu: 3, kit: 2 }, sentry: { alu: 1, kit: 1 }, substation: { concrete: 4, kit: 2 }, store: { concrete: 4, alu: 2 }, depot: { concrete: 4, alu: 2 }, residue: { concrete: 4 },
   cementkiln: { concrete: 4, alu: 2, kit: 2 }, batching: { concrete: 3, alu: 2, kit: 2 }, extrusion: { concrete: 4, alu: 2, kit: 3 },
 };
@@ -238,6 +268,9 @@ DEFS.pad.flim = { rp1: PAD_RP1, lox: PAD_LOX };
 DEFS.turret.ilim = { ammo: 4 };
 DEFS.sentry.ilim = { ammo: 2 };
 DEFS.vab.olim = { rocket: 1 };
+DEFS.drill.ilim = { anfo: 6 };
+DEFS.washplant.ilim = { bauxite: 8 }; DEFS.washplant.olim = { bauxite: 10 }; DEFS.washplant.flim = { water: 80 }; DEFS.washplant.folim = { tailings: 120 };
+DEFS.tailings.flim = { tailings: 200 };
 
 // =====================================================================
 //  noise (pure integer/IEEE arithmetic — identical on every engine)
@@ -280,6 +313,13 @@ const water = new Uint8Array(W * H);
 const isWater = (x, y) => x < 0 || y < 0 || x >= W || y >= H || water[x + y * W] === 1;
 const oreType = new Array(W * H).fill(null), oreAmt = new Int32Array(W * H), ob = new Float32Array(W * H);
 const oreInit = new Array(W * H).fill(null), oreInitAmt = new Int32Array(W * H), obInit = new Float32Array(W * H);
+// geology (pure functions of the seed, rebuilt on every client): hardness, bauxite assay, ground elevation
+const hard = new Uint8Array(W * H);          // 0 soft (digs free), 1 medium, 2 hard (blast it first)
+const gA = new Float32Array(W * H), gS = new Float32Array(W * H);   // Al₂O₃ %, reactive SiO₂ %
+const elev0 = new Float32Array(W * H);       // natural ground, metres
+// mutable mine state
+const frag = new Uint8Array(W * H);          // 1 = blasted (fragmented rock)
+const pit = new Uint8Array(W * H);           // 1 = inside a laid-out pit
 const landAround = (x, y, r) => { for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) if (isWater(x + i, y + j)) return false; return true; };
 function findSpawn() {
   const sx = Math.round(W * .2), sy = Math.round(H * .5);
@@ -331,6 +371,19 @@ function genWorld(seed) {
   P.forEach(([t, x, y, rad, rich], k) => paintPatch(t, x, y, rad, rich, k));
   patchList = P;
   for (let i = 0; i < W * H; i++) { oreInit[i] = oreType[i]; oreInitAmt[i] = oreAmt[i]; obInit[i] = ob[i]; }
+  hard.fill(0); gA.fill(0); gS.fill(0); frag.fill(0); pit.fill(0);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = x + y * W, t = oreType[i];
+    elev0[i] = fbm(x / 70, y / 70, sd(70)) * 42 + vnoise(x / 14, y / 14, sd(71)) * 5;
+    if (t === 'limestone') hard[i] = 2;
+    else if (t === 'coal') hard[i] = 1;
+    else if (t === 'bauxite') {
+      hard[i] = vnoise(x / 5, y / 5, sd(72)) > .52 ? 2 : 0;   // ferricrete caprock in places, soft earthy ore elsewhere
+      const d = Math.sqrt((x - SPAWN.x) * (x - SPAWN.x) + (y - SPAWN.y) * (y - SPAWN.y));
+      gA[i] = Math.round((38 + fbm(x / 9, y / 9, sd(73)) * 14 + Math.min(4, d / 60)) * 10) / 10;
+      gS[i] = Math.round((1.5 + (1 - fbm(x / 7, y / 7, sd(74))) * 10) * 10) / 10;
+    }
+  }
 }
 function hiveSites() {
   const r = mulberry(sd(31)), out = [];
@@ -343,6 +396,12 @@ function hiveSites() {
   return out;
 }
 const isOre = i => !!oreType[i] && oreType[i] !== 'oil';
+// depth of the hole dug in a tile (m), and ground elevation including it
+const depthM = i => (obInit[i] - ob[i]) * .08 + (oreInitAmt[i] - (oreType[i] ? oreAmt[i] : 0)) / 180 * (oreInit[i] === 'oil' ? 0 : 1);
+const elevAt = i => elev0[i] - depthM(i);
+const benchOf = i => Math.floor((oreInitAmt[i] - oreAmt[i]) / BENCH_T) + (ob[i] > 0 ? 0 : 1);
+const needsBlast = i => isOre(i) && hard[i] > 0 && !frag[i];
+const digFactor = i => !needsBlast(i) ? 1 : hard[i] === 2 ? .15 : .45;   // unblasted rock: low fill factor, long cycles
 // bug colonies
 const creep = new Uint8Array(W * H);
 const hives = [], flights = [];
@@ -361,7 +420,7 @@ let tick = 0, rs = 1234567, satP = 1, satO = 1, nextTruck = 1;
 const stores = { ...START_STORES };
 const stats = { bugsKilled: 0, lost: 0, rounds: 0, made: {}, fmade: {}, used: {}, delivered: {}, co2: 0, mud: 0, frozen: 0, ae: 0, potHot: 0, gridMWs: 0, diesel: 0, hauled: 0, launches: 0, kills: 0, enginefail: 0, crude: 0 };
 const power = { cap: 0, plantCap: 0, gridCap: 0, demand: 0, potDemand: 0, used: 0, fromGrid: 0 };
-const hooks = { onDeplete() {}, onStrip() {}, onEvent() {}, onCmd() {}, onCreep() {} };
+const hooks = { onDeplete() {}, onStrip() {}, onEvent() {}, onCmd() {}, onCreep() {}, onDig() {}, onPit() {} };
 function rand() { rs = rs + 0x6D2B79F5 | 0; let t = Math.imul(rs ^ rs >>> 15, 1 | rs); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }
 const madeAdd = (k, n = 1) => stats.made[k] = (stats.made[k] || 0) + n;
 const burnDiesel = l => { stats.diesel = (stats.diesel || 0) + l; stats.co2 += l * .0027; };
@@ -394,16 +453,20 @@ function makeEnt(type, x, y, dir) {
   else if (type === 'inserter') { e.a = 0; e.hand = null; }
   else if (type === 'pipe' || type === 'ptg') { e.con = [0, 0, 0, 0]; e.net = null; }
   else if (type === 'chest') { e.inv = {}; e.total = 0; }
-  else if (type === 'road') { e.sig = null; }
   else if (type === 'feeder') { e.flow = 0; }
   else if (type === 'hopper' || type === 'bin') { e.mat = null; e.stock = 0; e.incoming = 0; }
-  else if (type === 'excavator') { e.dig = -1; e.mat = null; e.acc = 0; e.swing = 0; e.target = -1; }
+  else if (type === 'excavator') { e.dig = -1; e.mat = null; e.acc = 0; e.swing = 0; e.target = -1; e.cyc = 0; e.job = null; e.passes = 0; }
+  else if (type === 'road') { e.sig = null; e.wear = 0; }
   else {
     e.inb = {}; e.outb = {}; e.fin = {}; e.fout = {}; e.active = null; e.prog = 0;
     if (type === 'pot') Object.assign(e, { T: 25, al: 0, bath: 0, xs: 11, carbon: 0, metal: 0, frozen: false, ae: false, hot: false, freezeT: 0, ce: 0, volt: 0, feedFlash: 0 });
     if (type === 'powerplant') { e.fuelE = 0; e.gen = 0; }
     if (type === 'depot') { e.sel = 'kit'; e.acc = 0; e.stock = 0; e.mat = null; }
     if (type === 'residue') { e.fill = 0; e.incoming = 0; }
+    if (type === 'crusher') { e.mat = null; e.stock = 0; e.incoming = 0; e.flow = 0; }
+    if (type === 'tailings') e.fill = 0;
+    if (type === 'drill') { e.holes = []; e.cur = -1; e.dprog = 0; e.fuse = 0; e.lx = x + 1; e.ly = y + 1; e.rhx = 0; e.rhy = -1; }
+    if (type === 'grader') { e.gt = -1; e.gn = -1; e.gp = 0; e.path = []; e.gh = 1; }
     if (type === 'sentry') { e.rounds = SENTRY_START; e.cool = 0; e.aimX = x + .5; e.aimY = y - 3; e.shotT = -99; }
     if (type === 'turret') { e.rounds = 0; e.cool = 0; e.aimX = x + 1; e.aimY = y - 3; e.shotT = -99; }
     if (type === 'pad') { e.rocket = false; e.auto = false; e.launchT = 0; e.boil = 0; }
@@ -586,7 +649,7 @@ function accepts(t, item) {
     case 'turret': return item === 'ammo' && (t.inb.ammo || 0) < 4;
     case 'sentry': return item === 'ammo' && (t.inb.ammo || 0) < 2;
     case 'residue': case 'inserter': case 'pipe': case 'ptg': case 'pump': case 'substation': case 'depot':
-    case 'road': case 'feeder': case 'hopper': case 'bin': case 'excavator': return false;
+    case 'road': case 'feeder': case 'hopper': case 'bin': case 'excavator': case 'crusher': case 'tailings': case 'grader': return false;
     default: { if (BULK.has(item)) return false; const L = DEFS[t.type].ilim[item]; return !!L && (t.inb[item] || 0) < L; }
   }
 }
@@ -610,11 +673,25 @@ function take(s, ok) {
 }
 
 // =====================================================================
+//  ore grade: mass-weighted blending as bauxite moves (pile, truck, hopper, pad, plant)
+// =====================================================================
+function blendG(o, pa, ps, have, add, g) {
+  if (add <= 0) return;
+  const a = o[pa] === undefined ? DEF_G[0] : o[pa], b = o[ps] === undefined ? DEF_G[1] : o[ps], h = have > 0 ? have : 0;
+  o[pa] = (a * h + g[0] * add) / (h + add); o[ps] = (b * h + g[1] * add) / (h + add);
+}
+const gradeOf = (o, pa = 'ga', ps = 'gs') => [o[pa] === undefined ? DEF_G[0] : o[pa], o[ps] === undefined ? DEF_G[1] : o[ps]];
+// which grade fields hold the bulk a source gives up / a target takes in
+const outFields = s => s.type === 'hopper' || s.type === 'bin' ? ['ga', 'gs'] : ['oga', 'ogs'];
+const inFields = t => t.type === 'hopper' || t.type === 'bin' || t.type === 'crusher' ? ['ga', 'gs'] : ['ga', 'gs'];
+
+// =====================================================================
 //  bulk transfer (feeders)
 // =====================================================================
 function bulkAvail(s) {   // -> [material, tonnes]
   if (!s) return [null, 0];
   if (s.type === 'hopper' || s.type === 'bin') return [s.mat, s.stock];
+  if (s.type === 'tailings') return [null, 0];
   if (s.outb) for (const k in s.outb) if (BULK.has(k) && s.outb[k] > 1e-9) return [k, s.outb[k]];
   return [null, 0];
 }
@@ -626,10 +703,11 @@ function bulkRoom(t, m) {
   return 0;
 }
 function bulkMove(s, t, m, mv) {
+  const g = GRADED.has(m) ? gradeOf(s, ...outFields(s)) : null;
   if (s.type === 'hopper' || s.type === 'bin') { s.stock -= mv; if (s.type === 'bin' && s.stock < 1e-6) { s.stock = 0; s.mat = null; } }
   else s.outb[m] -= mv;
-  if (t.type === 'bin' || t.type === 'hopper') { t.stock += mv; t.mat = m; }
-  else t.inb[m] = (t.inb[m] || 0) + mv;
+  if (t.type === 'bin' || t.type === 'hopper') { if (g) blendG(t, 'ga', 'gs', t.stock, mv, g); t.stock += mv; t.mat = m; }
+  else { if (g) blendG(t, 'ga', 'gs', t.inb[m] || 0, mv, g); t.inb[m] = (t.inb[m] || 0) + mv; }
 }
 function updFeeder(f) {
   const s = get(f.x - DX[f.dir], f.y - DY[f.dir]), t = get(f.x + DX[f.dir], f.y + DY[f.dir]);
@@ -697,15 +775,34 @@ function sinkRoom(k, m) {
   if (k.dead) return 0;
   if (k.type === 'hopper') return k.mat === m ? BIN_CAP - k.stock - k.incoming : 0;
   if (k.type === 'residue') return m === 'redmud' ? RESIDUE_CAP - k.fill - k.incoming : 0;
+  if (k.type === 'crusher') return CRUSHED[m] && (k.mat === m || k.stock < 1) ? ROM_PAD - k.stock - k.incoming : 0;
   return 0;
 }
-const SINK_PRI = { hopper: 0, residue: 1 };
+const SINK_PRI = { hopper: 0, crusher: 0, residue: 1 };
+const isSink = k => k.type === 'hopper' || k.type === 'residue' || k.type === 'crusher';
+// tip into a sink; returns tonnes moved
+function tipInto(k, t, rate) {
+  const m = t.mat;
+  const room = k.type === 'hopper' ? (k.mat === m ? BIN_CAP - k.stock : 0) : k.type === 'residue' ? (m === 'redmud' ? RESIDUE_CAP - k.fill : 0)
+    : k.type === 'crusher' ? (CRUSHED[m] && (k.mat === m || k.stock < 1) ? ROM_PAD - k.stock : 0) : 0;
+  const mv = Math.min(rate * DT, t.load, room);
+  if (mv <= 1e-9) return 0;
+  const g = GRADED.has(m) ? gradeOf(t) : null;
+  if (k.type === 'hopper' || k.type === 'crusher') { if (g) blendG(k, 'ga', 'gs', k.stock, mv, g); k.stock += mv; k.mat = m; }
+  else { k.fill += mv; stats.mud += mv; }
+  t.load -= mv; stats.hauled += mv;
+  return mv;
+}
+function loadFrom(t, m, mv, g) {   // put mv tonnes of m (grade g) on a truck
+  if (GRADED.has(m) && g) blendG(t, 'ga', 'gs', t.load, mv, g);
+  t.load += mv; t.mat = m;
+}
 function assignJob(t) {
   let best = null, bs = 1e18;
-  const sinks = ents.filter(k => k.type === 'hopper' || k.type === 'residue');
+  const sinks = ents.filter(isSink);
   if (t.load > 0 && t.mat) {   // still carrying something: find somewhere to tip it
     for (const k of sinks) {
-      if (sinkRoom(k, t.mat) < Math.min(t.load, TRUCK_CAP * .3)) continue;
+      if (sinkRoom(k, t.mat) < Math.min(t.load, capOf(t.mat) * .3)) continue;
       const kb = bays(k); if (!kb.length) continue;
       const r = bfs(t.tile, kb, false); if (!r) continue;
       const sc = SINK_PRI[k.type] * 1e6 + r.dist;
@@ -727,7 +824,7 @@ function assignJob(t) {
     const r1 = bfs(t.tile, sb, false); if (!r1) continue;
     let bk = null, bkScore = 1e18;
     for (const k of sinks) {
-      if (sinkRoom(k, m) < TRUCK_CAP * .3) continue;
+      if (sinkRoom(k, m) < capOf(m) * .3) continue;
       const kb = bays(k); if (!kb.length) continue;
       const r2 = bfs(sb[0], kb, false); if (!r2) continue;
       const sc = SINK_PRI[k.type] * 1e6 + r2.dist;
@@ -771,7 +868,20 @@ function updSignal(r) {
   const other = 1 - s.green;
   if (dem[other] && ((!dem[s.green] && s.t > 90) || s.t > 480)) s.amber = 60;
 }
-function truckSpeed(t) { return (t.load > 0 ? 3.5 : 5) / 60; }
+// Haul physics. Rimpull limits a loaded truck on a ramp; retarders cap it downhill. Ruts slow everyone.
+function gradeBetween(a, b) { const g = (elevAt(b) - elevAt(a)) / TILE_M; return g > .3 ? .3 : g < -.3 ? -.3 : g; }
+function speedFor(loaded, g, wear) {
+  let v = loaded ? 3.5 : 5;
+  if (g > 0) v *= Math.max(loaded ? .28 : .45, 1 - g * (loaded ? 7 : 3));
+  else v *= Math.min(loaded ? 1.2 : 1.12, 1 - g * (loaded ? 2 : 1.2));
+  return v * (1 - .45 * wear) / 60;
+}
+function fuelFor(loaded, g, wear) {
+  const base = DIESEL_TILE[loaded ? 1 : 0];
+  return base * (g > 0 ? 1 + g * (loaded ? 9 : 4) : Math.max(.35, 1 + g * 3)) * (1 + .6 * wear);
+}
+const wearRoad = (j, loaded) => { const r = cells[j]; if (r && r.type === 'road') r.wear = Math.min(1, (r.wear || 0) + (loaded ? .01 : .003)); };
+function truckSpeed(t) { return t.sp || (t.load > 0 ? 3.5 : 5) / 60; }
 function moveTruck(t) {
   if (t.next >= 0) {
     t.p += truckSpeed(t);
@@ -784,7 +894,9 @@ function moveTruck(t) {
   const h = dirBetween(t.tile, j);
   if (!canEnter(t, j, h)) { t.wait++; t.status = 'Waiting in traffic'; return; }
   t.next = j; t.h = h; t.p = 0; t.wait = 0; occAdd(j, t, h);
-  burnDiesel(DIESEL_TILE[t.load > 0 ? 1 : 0]);
+  const g = gradeBetween(t.tile, j), w = cells[j].wear || 0, ld = t.load > 0;
+  t.g = g; t.sp = speedFor(ld, g, w);
+  burnDiesel(fuelFor(ld, g, w)); wearRoad(j, ld);
 }
 function updTruck(t) {
   const job = t.job;
@@ -812,30 +924,27 @@ function updTruck(t) {
       const s = job.src;
       if (s.type === 'excavator') {
         t.status = s.status === 'Loading truck' ? 'Being loaded' : 'Waiting at shovel';
-        if (t.load >= TRUCK_CAP - 1e-6 || (!s.mat && t.load > 0) || t.full) { t.full = false; t.state = 'toSink'; t.path = []; }
+        if (t.load >= capOf(t.mat) - 1e-6 || (!s.mat && t.load > 0) || t.full) { t.full = false; t.state = 'toSink'; t.path = []; }
         else if (!s.mat && t.load <= 0) endJob(t);
       } else {
         const m = job.m;
         const av = s.type === 'bin' ? (s.mat === m ? s.stock : 0) : (s.sel === m ? s.stock : 0);
-        const mv = Math.min(10 * DT, av, TRUCK_CAP - t.load);
+        const mv = Math.min(10 * DT, av, capOf(m) - t.load);
         if (mv > 1e-9) {
+          const g = gradeOf(s);
           s.stock -= mv; if (s.stock < 1e-6) { s.stock = 0; if (s.type === 'bin') s.mat = null; }
-          t.load += mv; t.mat = m; t.wait = 0; t.status = 'Loading';
+          loadFrom(t, m, mv, g); t.wait = 0; t.status = 'Loading';
         } else { t.wait++; t.status = 'Waiting for material'; }
-        if (t.load >= TRUCK_CAP - 1e-6 || (t.wait > 180 && t.load >= TRUCK_CAP * .3)) { t.state = 'toSink'; t.path = []; }
+        if (t.load >= capOf(m) - 1e-6 || (t.wait > 180 && t.load >= capOf(m) * .3)) { t.state = 'toSink'; t.path = []; }
         else if (t.wait > 600 && t.load < 1e-6) endJob(t);
       }
       break;
     }
     case 'dumping': {
-      const k = job.sink, m = t.mat;
-      const room = k.type === 'hopper' ? (k.mat === m ? BIN_CAP - k.stock : 0) : k.type === 'residue' && m === 'redmud' ? RESIDUE_CAP - k.fill : 0;
-      const mv = Math.min(20 * DT, t.load, room);
+      const k = job.sink;
+      const mv = tipInto(k, t, 20);
       if (mv > 1e-9) {
-        t.load -= mv; t.tip = Math.min(1, (t.tip || 0) + .05); t.status = 'Tipping';
-        if (k.type === 'hopper') k.stock += mv;
-        else { k.fill += mv; stats.mud += mv; }
-        stats.hauled += mv;
+        t.tip = Math.min(1, (t.tip || 0) + .05); t.status = 'Tipping';
       } else { t.wait++; t.status = 'Waiting to tip (full)'; if (t.wait > 900) endJob(t); }
       if (t.load <= 1e-6) { t.load = 0; t.mat = null; endJob(t); }
       break;
@@ -919,8 +1028,10 @@ function nearRect(x, y, e, r) {
   return (nx - x) * (nx - x) + (ny - y) * (ny - y) <= r * r;
 }
 function updManual(t) {
-  const onRoad = isRoadI(Math.floor(t.mx) + Math.floor(t.my) * W);
-  const vmax = DRV_MAX * (onRoad ? 1 : .6) * (t.load > 0 ? .8 : 1);
+  const here = Math.floor(t.mx) + Math.floor(t.my) * W, onRoad = isRoadI(here);
+  const ax = Math.floor(t.mx + t.hx), ay = Math.floor(t.my + t.hy), ahead = ax >= 0 && ay >= 0 && ax < W && ay < H ? ax + ay * W : here;
+  const g = gradeBetween(here, ahead) * (t.v < 0 ? -1 : 1), wear = onRoad ? cells[here].wear || 0 : 0;
+  const vmax = DRV_MAX * (onRoad ? 1 : .6) * (t.load > 0 ? .8 : 1) * speedFor(t.load > 0, g, wear) / speedFor(t.load > 0, 0, 0);
   const th = t.drv ? t.th : 0;
   if (th > 0) t.v = t.v < 0 ? Math.min(0, t.v + DRV_BRAKE) : Math.min(vmax, t.v + DRV_ACC);
   else if (th < 0) t.v = t.v > 0 ? Math.max(0, t.v - DRV_BRAKE) : Math.max(-DRV_REV, t.v - DRV_ACC * .6);
@@ -934,21 +1045,19 @@ function updManual(t) {
   if (t.v !== 0) {
     const nx = t.mx + t.hx * t.v, ny = t.my + t.hy * t.v;
     if (driveBlocked(t, nx, ny)) t.v = 0;
-    else { t.mx = nx; t.my = ny; burnDiesel(DIESEL_TILE[t.load > 0 ? 1 : 0] * Math.abs(t.v)); }
+    else { t.mx = nx; t.my = ny; burnDiesel(fuelFor(t.load > 0, g, wear) * Math.abs(t.v)); const nt = Math.floor(nx) + Math.floor(ny) * W; if (nt !== here && isRoadI(nt)) wearRoad(nt, t.load > 0); }
   }
   t.tile = Math.floor(t.mx) + Math.floor(t.my) * W; t.h = Math.abs(t.hx) > Math.abs(t.hy) ? (t.hx > 0 ? 1 : 3) : (t.hy > 0 ? 2 : 0);
   t.tipping = false;
   if (t.act && Math.abs(t.v) < .01) {
     if (t.load > 0) {   // tip into a hopper / residue area beside the truck
-      const k = ents.find(k => (k.type === 'hopper' || k.type === 'residue') && nearRect(t.mx, t.my, k, 1.7) && sinkRoom(k, t.mat) + (k.incoming || 0) > 1e-6);
+      const k = ents.find(k => isSink(k) && nearRect(t.mx, t.my, k, 1.7) && sinkRoom(k, t.mat) + (k.incoming || 0) > 1e-6);
       if (!k) { t.status = 'Nothing here takes ' + ITEMS[t.mat].n; t.act = false; }
       else {
-        const room = k.type === 'hopper' ? BIN_CAP - k.stock : RESIDUE_CAP - k.fill, mv = Math.min(20 * DT, t.load, room);
-        if (mv <= 1e-9) { t.status = 'Hopper full'; t.act = false; }
+        const mv = tipInto(k, t, 20);
+        if (mv <= 1e-9) { t.status = DEFS[k.type].n + ' full'; t.act = false; }
         else {
-          t.load -= mv; t.tipping = true; t.status = 'Tipping';
-          if (k.type === 'hopper') k.stock += mv; else { k.fill += mv; stats.mud += mv; }
-          stats.hauled += mv;
+          t.tipping = true; t.status = 'Tipping';
           if (t.load <= 1e-6) { t.load = 0; t.mat = null; t.act = false; t.status = 'Empty'; }
         }
       }
@@ -956,10 +1065,14 @@ function updManual(t) {
       const s2 = ents.find(s2 => (s2.type === 'bin' || (s2.type === 'depot' && BULK.has(s2.sel))) && nearRect(t.mx, t.my, s2, 1.7) && s2.stock >= 1);
       if (!s2) { t.status = 'Nothing to load here (park beside a bin, or at a shovel\'s bay)'; t.act = false; }
       else {
-        const m = s2.type === 'bin' ? s2.mat : s2.sel, mv = Math.min(10 * DT, s2.stock, TRUCK_CAP - t.load);
-        s2.stock -= mv; if (s2.stock < 1e-6) { s2.stock = 0; if (s2.type === 'bin') s2.mat = null; }
-        t.load += mv; t.mat = m; t.status = 'Loading';
-        if (t.load >= TRUCK_CAP - 1e-6 || s2.stock <= 0) t.act = false;
+        const m = s2.type === 'bin' ? s2.mat : s2.sel;
+        if (t.load > 0 && t.mat !== m) { t.status = 'Truck carries a different load'; t.act = false; }
+        else {
+          const mv = Math.min(10 * DT, s2.stock, capOf(m) - t.load), g = gradeOf(s2);
+          s2.stock -= mv; if (s2.stock < 1e-6) { s2.stock = 0; if (s2.type === 'bin') s2.mat = null; }
+          loadFrom(t, m, mv, g); t.status = 'Loading';
+          if (t.load >= capOf(m) - 1e-6 || s2.stock <= 0) t.act = false;
+        }
       }
     }
   } else if (t.act && Math.abs(t.v) >= .01) t.act = false;
@@ -971,14 +1084,40 @@ function releaseAll() { for (const t of trucks) if (t.drv) exitVehicle(t.drv); f
 // =====================================================================
 //  excavator
 // =====================================================================
+// Benching: inside a pit the shovel takes the shallowest bench everywhere before cutting the next one down,
+// and prefers broken (blasted or soft) ground to solid rock.
+const inPitReach = (tiles) => tiles.some(i => pit[i] && isOre(i) && !cells[i]);
 function pickDig(e) {
-  let best = -1, bd = 1e9; const cx = e.x + 1, cy = e.y + 1;
-  for (const i of excTiles(e.x, e.y)) {
-    if (!isOre(i) || cells[i]) continue;
-    const dx = i % W - cx, dy = ((i / W) | 0) - cy, d = dx * dx + dy * dy + (dx * DX[e.dir] + dy * DY[e.dir] > 0 ? 6 : 0);
+  let best = -1, bd = 1e18; const cx = e.x + 1, cy = e.y + 1, tiles = excTiles(e.x, e.y), pitOnly = inPitReach(tiles);
+  for (const i of tiles) {
+    if (!isOre(i) || cells[i] || (pitOnly && !pit[i])) continue;
+    const dx = i % W - cx, dy = ((i / W) | 0) - cy;
+    const d = (pitOnly ? benchOf(i) * 1000 : 0) + (ob[i] <= 0 && needsBlast(i) ? 400 : 0) + dx * dx + dy * dy + (dx * DX[e.dir] + dy * DY[e.dir] > 0 ? 6 : 0);
     if (d < bd) { bd = d; best = i; }
   }
   return best;
+}
+// one bucket of broken ground from tile i, tonnes (bucket volume x fill factor x loose density)
+function bucketT(i) {
+  const m = oreType[i], fill = needsBlast(i) ? (hard[i] === 2 ? .3 : .55) : .9;
+  return Math.max(1, Math.round(BUCKET_M3 * fill * (DENS[m] || 1.4)));
+}
+const cycleOf = i => Math.round(EXC_CYCLE * (needsBlast(i) ? (hard[i] === 2 ? 2.2 : 1.4) : 1));
+// advance the bucket cycle; returns true on the tick the bucket dumps
+function cycleStep(e, len, job) {
+  if (e.job !== job) { e.job = job; e.cyc = 0; }
+  e.cyc += 1 / len; e.anim++; burnDiesel(DIESEL_EXC * DT);
+  if (e.cyc >= .62 && !e.dumped) { e.dumped = true; return true; }
+  if (e.cyc >= 1) { e.cyc = 0; e.dumped = false; }
+  return false;
+}
+function takeOre(e, i, n) {   // remove n t from the face; returns tonnes actually taken
+  const k = Math.min(n, oreAmt[i]);
+  const b0 = benchOf(i);
+  oreAmt[i] -= k; madeAdd(oreType[i], k);
+  if (oreAmt[i] <= 0) { oreType[i] = null; frag[i] = 0; hooks.onDeplete(i); e.dig = -1; }
+  else if (benchOf(i) !== b0) { hooks.onDig(i); e.dig = -1; }   // bench finished here: move along the face
+  return k;
 }
 // Tracked driving: continuous position and heading (unit vector, rotated without trig so it is deterministic).
 // The machine occupies the 3x3 tiles under its centre; it counter-rotates its tracks, so it can turn on the spot.
@@ -1028,49 +1167,191 @@ function updExcavator(e) {
   if (updExcDrive(e)) return;
   if (e.pref >= 0 && e.pref !== e.dig && isOre(e.pref) && !cells[e.pref] && excTiles(e.x, e.y).includes(e.pref)) e.dig = e.pref;
   if (e.dig < 0 || !isOre(e.dig) || cells[e.dig]) e.dig = pickDig(e);
-  const face = e.dig >= 0 ? oreType[e.dig] : null, pile = e.pile || 0;
+  const face = e.dig >= 0 ? ROM_OF[oreType[e.dig]] : null, pile = e.pile || 0;
   e.mat = pile >= 1 ? e.pileMat : face;   // what the next truck will get
   const bay = bays(e)[0];
   const [bx, by] = excBay(e);
-  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.69 && t.load < TRUCK_CAP && !t.full
+  const room = t => capOf(t.load > 0 ? t.mat : (pile >= 1 ? e.pileMat : face)) - t.load;
+  const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.69 && room(t) >= 1 && !t.full
     : bay !== undefined && t.tile === bay && t.next < 0 && t.state === 'loading' && t.job && t.job.src === e);
-  // a truck at the bay: rehandle the stockpile first (loose material loads faster)
+  if (!tr) e.passes = 0;
+  // a truck at the bay: rehandle the stockpile first (broken material loads in full buckets)
   if (tr && pile >= 1) {
     if (tr.load > 0 && tr.mat !== e.pileMat) { if (!tr.man) tr.full = true; e.status = 'Truck carries a different ore'; return; }
-    tr.mat = e.pileMat; e.target = -2; e.anim++; e.status = 'Loading truck from stockpile'; burnDiesel(DIESEL_EXC * DT);
-    const mv = Math.min(EXC_RATE * 1.5 * DT, e.pile, TRUCK_CAP - tr.load);
-    e.pile -= mv; tr.load += mv; if (e.pile < 1e-6) { e.pile = 0; e.pileMat = null; }
-    return;
-  }
-  if (e.dig < 0) { e.status = pile >= 1 ? 'Face exhausted — stockpile waiting' : 'Face exhausted — relocate'; e.target = -1; return; }
-  if (ob[e.dig] > 0) {
-    const mv = EXC_RATE * 1.5 * DT;
-    ob[e.dig] -= mv; e.spoil = (e.spoil || 0) + mv; e.target = e.dig; e.anim++; burnDiesel(DIESEL_EXC * DT);
-    e.status = 'Stripping overburden';
-    if (ob[e.dig] <= 0) { ob[e.dig] = 0; hooks.onStrip(e.dig); }
-    return;
-  }
-  const m = face;
-  if (!tr) {   // no truck: dig onto the stockpile
-    if (pile >= EXC_PILE_CAP - 1e-6) { e.status = bay === undefined ? 'Stockpile full — no road at bay' : 'Stockpile full — waiting for truck'; e.target = -1; return; }
-    if (pile >= 1 && e.pileMat !== m) { e.status = 'Stockpile holds a different ore'; e.target = -1; return; }
-    e.target = e.dig; e.anim++; e.status = 'Digging to stockpile'; burnDiesel(DIESEL_EXC * DT);
-    e.acc += EXC_RATE * DT;
-    while (e.acc >= 1 && (e.pile || 0) < EXC_PILE_CAP) {
-      e.acc -= 1; e.pile = (e.pile || 0) + 1; e.pileMat = m; madeAdd(m);
-      if (--oreAmt[e.dig] <= 0) { oreType[e.dig] = null; hooks.onDeplete(e.dig); e.dig = -1; break; }
+    e.target = -2; e.status = 'Loading truck from stockpile';
+    if (cycleStep(e, REHANDLE_CYCLE, 'rehandle')) {
+      const r = room(tr), b = Math.round(BUCKET_M3 * .95 * (DENS[e.pileMat] || 1.4)), mv = Math.min(b, e.pile, r);
+      loadFrom(tr, e.pileMat, mv, gradeOf(e)); e.pile -= mv; e.passes++;
+      if (e.pile < 1e-6) { e.pile = 0; e.pileMat = null; }
+      if (room(tr) < b * .4 && !tr.man) tr.full = true;
     }
     return;
   }
-  if (tr.man && tr.load > 0 && tr.mat !== m) { e.status = 'Truck carries a different ore'; return; }
-  if (tr.load > 0 && tr.mat !== m) { tr.full = true; e.status = 'Different ore in face'; return; }
-  tr.mat = m; e.target = e.dig; e.anim++; e.status = 'Loading truck';
-  burnDiesel(DIESEL_EXC * DT);
-  e.acc += EXC_RATE * DT;
-  while (e.acc >= 1 && tr.load < TRUCK_CAP) {
-    e.acc -= 1; tr.load += 1; madeAdd(m);
-    if (--oreAmt[e.dig] <= 0) { oreType[e.dig] = null; hooks.onDeplete(e.dig); e.dig = -1; break; }
+  if (e.dig < 0) { e.status = pile >= 1 ? 'Face exhausted — stockpile waiting' : 'Face exhausted — relocate'; e.target = -1; e.job = null; return; }
+  const i = e.dig;
+  if (ob[i] > 0) {   // overburden: soft, cast to the spoil heap
+    e.target = i; e.status = 'Stripping overburden';
+    if (cycleStep(e, STRIP_CYCLE, 'strip')) {
+      const mv = Math.min(ob[i], 18);
+      ob[i] -= mv; e.spoil = (e.spoil || 0) + mv * 3;
+      if (ob[i] <= 1e-6) { ob[i] = 0; hooks.onStrip(i); e.dig = -1; }
+    }
+    return;
   }
+  const m = face, slow = needsBlast(i);
+  if (!tr) {   // no truck: dig onto the stockpile
+    if (pile >= EXC_PILE_CAP - 1e-6) { e.status = bay === undefined ? 'Stockpile full — no road at bay' : 'Stockpile full — waiting for truck'; e.target = -1; e.job = null; return; }
+    if (pile >= 1 && e.pileMat !== m) { e.status = 'Stockpile holds a different ore'; e.target = -1; e.job = null; return; }
+    e.target = i; e.status = slow ? 'Digging unblasted rock (slow)' : 'Digging to stockpile';
+    if (cycleStep(e, cycleOf(i), 'pile')) {
+      const g = [gA[i], gS[i]], k = takeOre(e, i, Math.min(bucketT(i), Math.ceil(EXC_PILE_CAP - pile)));
+      blendG(e, 'ga', 'gs', pile, k, g); e.pile = pile + k; e.pileMat = m;
+    }
+    return;
+  }
+  if (tr.load > 0 && tr.mat !== m) { if (!tr.man) tr.full = true; e.status = 'Truck carries a different ore'; return; }
+  e.target = i; e.status = slow ? 'Loading truck (unblasted rock, slow)' : 'Loading truck';
+  if (cycleStep(e, cycleOf(i), 'load')) {
+    const g = [gA[i], gS[i]], b = bucketT(i), r = room(tr);
+    const k = takeOre(e, i, Math.max(0, Math.min(b, Math.floor(r))));
+    if (k > 0) { loadFrom(tr, m, k, g); e.passes++; }
+    if (room(tr) < b * .4 && !tr.man) tr.full = true;
+  }
+}
+
+// =====================================================================
+//  drill & blast, crushing, washing, tailings, road grading
+// =====================================================================
+function drillTargets(e) {
+  const cx = e.x + 1, cy = e.y + 1, out = [];
+  let pitAny = false;
+  for (let j = -DRILL_R; j <= DRILL_R; j++) for (let i = -DRILL_R; i <= DRILL_R; i++) {
+    const x = cx + i, y = cy + j; if (x < 0 || y < 0 || x >= W || y >= H || i * i + j * j > DRILL_R * DRILL_R) continue;
+    const k = x + y * W; if (pit[k] && isOre(k)) pitAny = true;
+  }
+  for (let j = -DRILL_R; j <= DRILL_R; j++) for (let i = -DRILL_R; i <= DRILL_R; i++) {
+    const x = cx + i, y = cy + j; if (x < 0 || y < 0 || x >= W || y >= H || i * i + j * j > DRILL_R * DRILL_R) continue;
+    const k = x + y * W;
+    if (needsBlast(k) && ob[k] <= 0 && !cells[k] && (!pitAny || pit[k]) && !e.holes.includes(k)) out.push(k);
+  }
+  out.sort((a, b) => (pitAny ? benchOf(a) - benchOf(b) : 0) || a - b);
+  return out;
+}
+// the rig trams between holes; the 2x2 building is its explosives magazine
+const RIG_V = .8 / 60;
+function tram(e, x, y) {
+  const dx = x - e.lx, dy = y - e.ly, d = Math.sqrt(dx * dx + dy * dy);
+  if (d < .05) return true;
+  const v = Math.min(d, RIG_V); e.lx += dx / d * v; e.ly += dy / d * v; e.rhx = dx / d; e.rhy = dy / d; burnDiesel(.01 * DT);
+  return false;
+}
+const rigHome = e => [e.x + 1 + DX[e.dir] * 1.6, e.y + 1 + DY[e.dir] * 1.6];
+function updDrill(e) {
+  if (e.fuse > 0) {
+    const [hx, hy] = rigHome(e); tram(e, hx, hy);
+    e.status = 'Clear the area — firing in ' + Math.ceil(e.fuse / 60) + ' s';
+    if (--e.fuse === 0) {
+      for (const k of e.holes) if (isOre(k)) { frag[k] = 1; hooks.onDig(k); }
+      stats.blasts = (stats.blasts || 0) + 1;
+      hooks.onEvent('blast', { tiles: e.holes.slice(), x: e.x + 1, y: e.y + 1 });
+      e.holes = [];
+    }
+    return;
+  }
+  e.holes = e.holes.filter(k => needsBlast(k));
+  const need = Math.ceil(e.holes.length / 2);
+  const tg = e.holes.length < PATTERN ? drillTargets(e) : [];
+  if (e.holes.length && !tg.length && e.cur < 0) e.idle = (e.idle || 0) + 1; else e.idle = 0;
+  if (e.holes.length >= PATTERN || e.idle > 1800) {   // full pattern (or nothing more to drill for 30 s): charge and fire
+    const [hx, hy] = rigHome(e); tram(e, hx, hy);
+    if ((e.inb.anfo || 0) < need) { e.status = `Pattern drilled (${e.holes.length} holes) — needs ${need} ANFO`; return; }
+    e.inb.anfo -= need; e.fuse = FUSE; e.cur = -1; e.idle = 0; return;
+  }
+  if (e.cur >= 0 && !needsBlast(e.cur)) e.cur = -1;
+  if (e.cur < 0) {
+    if (!tg.length) { const [hx, hy] = rigHome(e); tram(e, hx, hy); e.status = e.holes.length ? `${e.holes.length} holes drilled — waiting for more stripped rock` : 'Nothing to drill (strip the overburden off hard rock in range)'; return; }
+    e.cur = tg[0]; e.dprog = 0;
+  }
+  if (!tram(e, (e.cur % W) + .5, ((e.cur / W) | 0) + .5)) { e.status = `Tramming to hole ${e.holes.length + 1}/${PATTERN}`; return; }
+  e.dprog += 1 / DRILL_T; e.anim++; burnDiesel(.012 * DT);
+  e.status = `Drilling hole ${e.holes.length + 1}/${PATTERN}`;
+  if (e.dprog >= 1) { e.holes.push(e.cur); e.cur = -1; e.dprog = 0; }
+}
+function updCrusher(e) {
+  e.wants = 0; e.flow = 0;
+  if (e.stock < 1e-6) { e.stock = 0; if (e.mat && !(e.outb[CRUSHED[e.mat]] > 1e-9)) e.mat = null; }
+  if (!e.mat || e.stock <= 0) { e.status = 'ROM pad empty'; return; }
+  const out = CRUSHED[e.mat], have = e.outb[out] || 0;
+  for (const k in e.outb) if (k !== out && e.outb[k] > 1e-9) { e.status = 'Clearing ' + ITEMS[k].n; return; }
+  if (have >= 20) { e.status = 'Crushed ore backing up — feeder blocked or missing'; return; }
+  e.wants = DEFS.crusher.power;
+  if (satO <= 0) { e.status = 'No power'; return; }
+  const mv = Math.min(CRUSH_RATE * satO * DT, e.stock, 20 - have);
+  if (GRADED.has(out)) blendG(e, 'oga', 'ogs', have, mv, gradeOf(e));
+  e.stock -= mv; e.outb[out] = have + mv; e.flow = mv; e.anim += satO; madeAdd(out, mv);
+  e.status = 'Crushing ' + ITEMS[e.mat].n;
+}
+function updWash(e) {
+  portExchange(e);
+  e.wants = 0;
+  if (!e.wact) {
+    if ((e.inb.bauxite || 0) < 4 - 1e-9) { e.status = 'Missing: crushed bauxite'; return; }
+    if ((e.fin.water || 0) < 30 - 1e-9) { e.status = 'Missing: Water' + (e.ports[0].net ? '' : ' (no pipe)'); return; }
+    if ((e.outb.bauxite || 0) > 6 || (e.fout.tailings || 0) > 90) { e.status = (e.fout.tailings || 0) > 90 ? 'Tailings backing up — pipe to a dam' : 'Output full'; return; }
+    const [a, si] = gradeOf(e), m = .06 + .012 * si;            // fines carry clay: high silica, lower alumina
+    const t = 4 * (1 - m), al = (a / 100 * 4 - m * 4 * .3) / t, sil = (si / 100 * 4 * .5) / t;
+    e.inb.bauxite -= 4; e.fin.water -= 30;
+    e.wact = true; e.prog = 0; e.batch = [t, Math.min(65, al * 100), Math.max(.3, sil * 100), m];
+  }
+  e.wants = DEFS.washplant.power;
+  if (satO <= 0) { e.status = 'No power'; return; }
+  e.prog += satO / 120; e.anim += satO; e.status = 'Washing';
+  if (e.prog >= 1) {
+    const [t, al, sil, m] = e.batch;
+    blendG(e, 'oga', 'ogs', e.outb.bauxite || 0, t, [al, sil]);
+    e.outb.bauxite = (e.outb.bauxite || 0) + t; e.fout.tailings = (e.fout.tailings || 0) + 24 + m * 60;
+    stats.tails = (stats.tails || 0) + 4 * m;
+    e.wact = false; e.prog = 0;
+  }
+}
+function updTailings(e) {
+  portExchange(e);
+  const f = e.fin.tailings || 0;
+  if (f > 0 && e.fill < TAIL_CAP) { const mv = Math.min(f, TAIL_CAP - e.fill); e.fill += mv; e.fin.tailings = f - mv; }
+  e.status = e.fill >= TAIL_CAP ? 'Full' : f > 0 || e.fill > 0 ? 'Settling' : 'Empty';
+}
+function updGrader(e) {
+  if (e.gt < 0 || !isRoadI(e.gt)) {
+    const b = bays(e); e.path = []; e.gn = -1; e.gp = 0;
+    if (!b.length) { e.gt = -1; e.status = 'Needs a road beside the shed'; return; }
+    e.gt = b[0];
+  }
+  const cx = e.x + 1, cy = e.y + 1;
+  if (e.gn >= 0) {
+    e.gp += GRADER_SPEED; e.anim++;
+    if (e.gp >= 1) { e.gt = e.gn; e.gn = -1; e.gp = 0; e.path.shift(); }
+  }
+  const r = cells[e.gt];
+  if (e.gn < 0 && r && r.wear > .02 && (!e.path.length || r.wear > .08)) {   // blade down: cut the ruts out
+    r.wear = Math.max(0, r.wear - .006); e.anim++; burnDiesel(.02 * DT); e.status = 'Grading road'; return;
+  }
+  if (e.gn < 0 && !e.path.length && (tick + e.x * 13) % 60 === 0) {
+    let best = -1, bw = .12;
+    for (const o of ents) if (o.type === 'road' && o.wear > bw && Math.abs(o.x - cx) + Math.abs(o.y - cy) <= GRADER_R) { bw = o.wear; best = o.x + o.y * W; }
+    if (best >= 0 && best !== e.gt) { const p = bfs(e.gt, [best], true); if (p && p.path.length) e.path = p.path; }
+  }
+  if (e.gn < 0 && e.path.length) {
+    const j = e.path[0];
+    if (!isRoadI(j)) { e.path = []; return; }
+    e.gh = dirBetween(e.gt, j); e.gn = j; e.gp = 0; burnDiesel(.15);
+  }
+  e.status = e.gn >= 0 ? 'Driving to rutted road' : 'Roads in good order';
+}
+function setPit(x0, y0, x1, y1, on) {
+  const ax = Math.max(0, Math.min(x0, x1)), bx = Math.min(W - 1, Math.max(x0, x1)), ay = Math.max(0, Math.min(y0, y1)), by = Math.min(H - 1, Math.max(y0, y1));
+  if (bx - ax > 40 || by - ay > 40) return;
+  for (let y = ay; y <= by; y++) for (let x = ax; x <= bx; x++) { const i = x + y * W; if (!water[i]) pit[i] = on ? 1 : 0; }
+  hooks.onPit(ax, ay, bx, by);
 }
 
 // =====================================================================
@@ -1104,6 +1385,12 @@ function updMachine(m) {
     const r = d.recipes.find(r => recipeReady(m, r));
     if (!r) { m.status = 'Missing: ' + missing(m).join(', '); return; }
     if (!outputRoom(m, r)) { m.status = 'Output full'; return; }
+    if (m.type === 'mill') {
+      const [a, si] = gradeOf(m), extra = Math.round(si * 1.6 * 10) / 10;
+      if ((m.fin.liquor || 0) < r.fi.liquor + extra - 1e-9) { m.status = `Missing: Caustic liquor (silica ${si.toFixed(1)} % eats ${extra} more)`; return; }
+      m.fin.liquor -= extra; stats.sodaLost = (stats.sodaLost || 0) + extra;
+      m.yld = Math.round(40 * a / 47 * 10) / 10;
+    }
     for (const k in r.i || {}) { m.inb[k] -= r.i[k]; if (k === 'coal') stats.co2 += r.i[k] * 2.4; if (k === 'limestone') stats.co2 += r.i[k] * .44; }
     for (const k in r.fi || {}) m.fin[k] -= r.fi[k];
     m.active = r; m.prog = 0;
@@ -1121,7 +1408,7 @@ function updMachine(m) {
     if (m.type === 'teststand') m.fire = 40;
     if (m.type === 'teststand' && rand() < .04) { stats.enginefail++; hooks.onEvent('enginefail', { x: m.x, y: m.y }); }
     else for (const k in r.o || {}) { m.outb[k] = (m.outb[k] || 0) + r.o[k]; madeAdd(k, r.o[k]); }
-    for (const k in r.fo || {}) { m.fout[k] = (m.fout[k] || 0) + r.fo[k]; stats.fmade[k] = (stats.fmade[k] || 0) + r.fo[k]; }
+    for (const k in r.fo || {}) { const n = m.type === 'mill' && k === 'slurry' && m.yld ? m.yld : r.fo[k]; m.fout[k] = (m.fout[k] || 0) + n; stats.fmade[k] = (stats.fmade[k] || 0) + n; }
     m.active = null; m.prog = 0;
   }
 }
@@ -1422,6 +1709,11 @@ function step() {
       case 'depot': updDepot(e); break;
       case 'feeder': updFeeder(e); break;
       case 'excavator': updExcavator(e); break;
+      case 'drill': updDrill(e); break;
+      case 'crusher': updCrusher(e); break;
+      case 'washplant': updWash(e); break;
+      case 'tailings': updTailings(e); break;
+      case 'grader': updGrader(e); break;
       case 'road': if (e.sig) updSignal(e); break;
       case 'oilwell': updWell(e); break;
       case 'pad': updPad(e); break;
@@ -1455,6 +1747,7 @@ function applyCmd(pid, c) {
     case 'depot': { const e = get(x, y); if (e && e.type === 'depot' && IMPORTS.includes(c.sel) && e.sel !== c.sel) { e.sel = c.sel; e.acc = 0; } break; }
     case 'hopper': { const e = get(x, y); if (e && e.type === 'hopper' && (c.mat === null || BULK.has(c.mat)) && e.stock < 1) { e.mat = c.mat; e.stock = 0; } break; }
     case 'signal': toggleSignal(x, y, pid); break;
+    case 'pit': { const x1 = int(c.x1), y1 = int(c.y1); if (x >= 0 && y >= 0 && x1 >= 0 && y1 >= 0) setPit(x, y, x1, y1, !!c.on); break; }
     case 'truck': spawnTruck(x, y, pid); break;
     case 'rmtruck': removeTruck(c.id | 0); break;
     case 'launch': { const e = get(x, y); const tx = int(c.tx), ty = int(c.ty); if (e && e.type === 'pad' && tx >= 0 && ty >= 0 && tx < W && ty < H) launch(e, tx, ty); break; }
@@ -1495,13 +1788,15 @@ function serialize() {
   });
   const ns = nets.map(n => [idx.get(n.pipes[0]), n.fluid, n.amt]);
   const ts = trucks.map(t => ({ ...t, job: t.job ? { src: idx.get(t.job.src), sink: idx.get(t.job.sink), m: t.job.m } : null, path: t.path.slice() }));
-  const od = [], obd = [], cr = [];
+  const od = [], obd = [], cr = [], fr = [], pm = [];
   for (let i = 0; i < W * H; i++) {
+    if (frag[i]) fr.push(i);
+    if (pit[i]) pm.push(i);
     if (oreAmt[i] !== oreInitAmt[i] || oreType[i] !== oreInit[i]) od.push(i, oreType[i] ? oreAmt[i] : -1);
     if (ob[i] !== obInit[i]) obd.push(i, ob[i]);
     if (creep[i]) cr.push(i);
   }
-  return { v: 6, W, H, seed: SEED, sp: [SPAWN.x, SPAWN.y], tick, stores: { ...stores }, rs, satP, satO, nextTruck, nextHive, stats: JSON.parse(JSON.stringify(stats)), power: { ...power }, es, ns, ts, od, obd,
+  return { v: 7, fr, pm, W, H, seed: SEED, sp: [SPAWN.x, SPAWN.y], tick, stores: { ...stores }, rs, satP, satO, nextTruck, nextHive, stats: JSON.parse(JSON.stringify(stats)), power: { ...power }, es, ns, ts, od, obd,
     cr, hv: hives.map(h => ({ ...h })), fl: flights.map(f => ({ ...f })), nextBug, bg: bugs.map(b => ({ id: b.id, x: b.x, y: b.y, hp: b.hp, bite: b.bite, h: b.h, tgt: b.tgt && !b.tgt.dead ? idx.get(b.tgt) : -1 })) };
 }
 function load(s) {
@@ -1514,6 +1809,8 @@ function load(s) {
   for (let k = 0; k < s.od.length; k += 2) { const i = s.od[k]; if (s.od[k + 1] < 0) { oreType[i] = null; oreAmt[i] = 0; } else oreAmt[i] = s.od[k + 1]; }
   for (let k = 0; k < s.obd.length; k += 2) ob[s.obd[k]] = s.obd[k + 1];
   creep.fill(0); for (const i of s.cr) creep[i] = 1;
+  frag.fill(0); for (const i of s.fr || []) frag[i] = 1;
+  pit.fill(0); for (const i of s.pm || []) pit[i] = 1;
   hives.length = 0; for (const h of s.hv) hives.push({ ...h });
   flights.length = 0; for (const f of s.fl) flights.push({ ...f });
   nextHive = s.nextHive || 1;
@@ -1545,12 +1842,18 @@ function checksum() {
     if (e.T !== undefined) { mix(e.T); mix(e.al); mix(e.metal); }
     if (e.stock !== undefined) mix(e.stock);
     if (e.pile) mix(e.pile);
+    if (e.cyc) mix(e.cyc);
+    if (e.wear) mix(e.wear);
+    if (e.fill !== undefined) mix(e.fill);
+    if (e.gt !== undefined) { mix(e.gt); mix(e.gp); }
+    if (e.holes) { mix(e.holes.length); mix(e.dprog); mix(e.fuse); mix(e.lx); mix(e.ly); }
+    if (e.ga !== undefined) mix(e.ga);
     if (e.fx !== undefined) { mix(e.fx); mix(e.fy); mix(e.hx); }
     if (e.inb) for (const k in e.inb) mix(e.inb[k]);
     if (e.fin) for (const k in e.fin) mix(e.fin[k]);
     if (e.net) mix(e.net.amt);
   }
-  for (const t of trucks) { mix(t.tile); mix(t.p); mix(t.load); mix(t.next); if (t.man) { mix(t.mx); mix(t.my); mix(t.hx); mix(t.v); } }
+  for (const t of trucks) { mix(t.tile); mix(t.p); mix(t.load); mix(t.next); if (t.ga !== undefined) mix(t.ga); if (t.man) { mix(t.mx); mix(t.my); mix(t.hx); mix(t.v); } }
   mix(hives.length); for (const h of hives) { mix(h.x); mix(h.y); mix(h.pop); }
   mix(flights.length); for (const f of flights) mix(f.t);
   mix(bugs.length); for (const b of bugs) { mix(b.x); mix(b.y); mix(b.hp); }
@@ -1567,6 +1870,7 @@ const Sim = {
   hash, mulberry, vnoise, fbm, waterField, water, isWater, oreType, oreAmt, ob, oreInit, oreInitAmt, obInit,
   cells, ents, trucks, stats, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
   get, fp, l2w, makeEnt, canPlace, placeError, place, removeEnt, beltPoint, handPos, isPipe, isJunction, bays, excTiles,
+  hard, gA, gS, elev0, frag, pit, depthM, elevAt, benchOf, needsBlast, digFactor, capOf, DENS, SWELL, ROM_OF, CRUSHED, ROM_PAD, DRILL_R, GRADER_R, PATTERN, TAIL_CAP, BUCKET_M3, DEF_G, GRADED, gradeOf, bucketT, cycleOf, speedFor, gradeBetween,
   step, applyCmd, serialize, load, checksum, newWorld, SPAWN, SAFE_R, get seed() { return SEED; }, get patches() { return patchList; },
   get tick() { return tick; }, get satP() { return satP; }, get satO() { return satO; }, get nets() { return nets; },
 };
