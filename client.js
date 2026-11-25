@@ -1107,14 +1107,29 @@ Object.assign(DRAW, {
 // ---------------------------------------------------------------- world-frame overlays
 function angLerp(a, b, k) { let d = ((b - a + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI; return a + d * k; }
 const smooth01 = x => x * x * (3 - 2 * x);
+function excXform(c, e) {
+  if (e.mvP > 0) c.translate(DX[e.mvD] * e.mvP * T, DY[e.mvD] * e.mvP * T);
+  if (e.tnP > 0) { const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T; c.translate(cx, cy); c.rotate(e.tnD * smooth01(e.tnP) * PI / 2); c.translate(-cx, -cy); }
+}
+// stockpile on the left of the bay side, spoil heap behind on the right (relative to which way it faces)
+function excHeapPos(e, which) {
+  const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T, fx = DX[e.dir], fy = DY[e.dir], lx = fy, ly = -fx;
+  return which === 'pile' ? [cx + lx * 2.3 * T + fx * .7 * T, cy + ly * 2.3 * T + fy * .7 * T] : [cx - lx * 2.4 * T - fx * 1.2 * T, cy - ly * 2.4 * T - fy * 1.2 * T];
+}
+function drawExcHeaps(c, e) {
+  if (e.spoil > 2) { const [x, y] = excHeapPos(e, 'spoil'), r = 6 + Math.min(26, Math.sqrt(e.spoil) * 1.1); c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(x + 4, y + 5, r, r * .8, 0, 0, 2 * PI); c.fill(); heapFill(c, x, y, r, '#6e5a44'); }
+  if (e.pile > .5) { const [x, y] = excHeapPos(e, 'pile'), r = 5 + 19 * Math.sqrt(e.pile / S.EXC_PILE_CAP); c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(x + 4, y + 5, r, r * .8, 0, 0, 2 * PI); c.fill(); heapFill(c, x, y, r, MATCOL[e.pileMat] || '#888'); }
+}
 function drawExcavatorTop(c, e, dt) {
   const cx = (e.x + 1.5) * T, cy = (e.y + 1.5) * T;
   const face = e.dig >= 0 ? [(e.dig % W + .5) * T, ((e.dig / W | 0) + .5) * T] : [cx + DX[e.dir] * 64, cy + DY[e.dir] * 64];
   const bay = [cx + DX[e.dir] * 64, cy + DY[e.dir] * 64];
   const spoil = [cx - DY[e.dir] * 70 - DX[e.dir] * 30, cy + DX[e.dir] * 70 - DY[e.dir] * 30];
   let tgt = face, loaded = false;
-  if (e.status === 'Loading truck' || e.status === 'Stripping overburden') {
-    const ph = (tnow() * .45 + e.x * .13) % 1, other = e.status === 'Loading truck' ? bay : spoil;
+  const JOBS = { 'Loading truck': [face, bay], 'Stripping overburden': [face, excHeapPos(e, 'spoil')], 'Digging to stockpile': [face, excHeapPos(e, 'pile')], 'Loading truck from stockpile': [excHeapPos(e, 'pile'), bay] };
+  if (JOBS[e.status]) {
+    const [from, other] = JOBS[e.status]; void spoil;
+    const ph = (tnow() * .45 + e.x * .13) % 1, face = from;
     const s = ph < .35 ? 0 : ph < .5 ? smooth01((ph - .35) / .15) : ph < .85 ? 1 : 1 - smooth01((ph - .85) / .15);
     tgt = [face[0] + (other[0] - face[0]) * s, face[1] + (other[1] - face[1]) * s]; loaded = s > .1 && s < .99 || (ph > .5 && ph < .85);
     e._dig = ph < .35;
@@ -1140,7 +1155,7 @@ function drawExcavatorTop(c, e, dt) {
   c.fillStyle = '#4a4540'; c.beginPath(); c.moveTo(R - 10, -9); c.lineTo(R + 6, -11); c.lineTo(R + 8, 11); c.lineTo(R - 10, 9); c.closePath(); c.fill();
   c.strokeStyle = '#1b1815'; c.lineWidth = 1.2; c.stroke();
   c.fillStyle = '#c8ccd0'; for (let k = -8; k <= 8; k += 4) c.fillRect(R + 6, k - 1, 4, 2);
-  if (loaded) heapFill(c, R - 1, 0, 7, e.status === 'Stripping overburden' ? '#7a5a40' : (MATCOL[e.mat] || '#888'));
+  if (loaded) heapFill(c, R - 1, 0, 7, e.status === 'Stripping overburden' ? '#7a5a40' : (MATCOL[e.status.includes('stockpile') ? e.pileMat : e.mat] || '#888'));
   c.restore();
   if (e._dig && Math.random() < .3 && particles.length < 700) particles.push({ x: face[0] + (Math.random() - .5) * 16, y: face[1] + (Math.random() - .5) * 16, vx: (Math.random() - .5) * .4, vy: -.2, life: 0, max: 50, r: 4, k: 'dust' });
 }
@@ -1666,7 +1681,7 @@ function driveInput() {
   const up = keys.w || keys.arrowup, dn = keys.s || keys.arrowdown, lf = keys.a || keys.arrowleft, rt = keys.d || keys.arrowright;
   let o = null;
   if (t) o = { k: 'drive', th: (up ? 1 : 0) - (dn ? 1 : 0), st: (rt ? 1 : 0) - (lf ? 1 : 0) };
-  else if (e) o = { k: 'drive', d: up ? 0 : rt ? 1 : dn ? 2 : lf ? 3 : -1 };
+  else if (e) o = { k: 'drive', th: (up ? 1 : 0) - (dn ? 1 : 0), st: (rt ? 1 : 0) - (lf ? 1 : 0) };
   const sig = o ? JSON.stringify(o) : '';
   if (sig && sig !== drvSent) cmd(o);
   drvSent = sig;
@@ -1675,8 +1690,8 @@ function driveInput() {
   el.style.display = 'block';
   el.innerHTML = t
     ? `<b>Ural-6×6 haul truck</b> · ${esc(t.status)} · ${Math.round(Math.abs(t.v || 0) * 60 * 3.6 * 4)} km/h<br><kbd>W</kbd>/<kbd>S</kbd> throttle · <kbd>A</kbd>/<kbd>D</kbd> steer · stop at a shovel's bay to be loaded · <kbd>F</kbd> tip into a hopper / load from a bin · <kbd>E</kbd> get out`
-    : `<b>Excavator</b> · ${esc(e.status)}<br><kbd>WASD</kbd> crawl · click ore within 3 tiles to dig there · <kbd>R</kbd> turn the truck bay · <kbd>E</kbd> get out`;
-  return t ? vehPos(t) : [e.x + 1.5, e.y + 1.5];
+    : `<b>Excavator</b> · ${esc(e.status)}${e.pile >= 1 ? ` · stockpile ${Math.round(e.pile)} t` : ''}<br><kbd>W</kbd>/<kbd>S</kbd> crawl forward/back · <kbd>A</kbd>/<kbd>D</kbd> pivot · click ore within 3 tiles to dig there · <kbd>E</kbd> get out`;
+  return t ? vehPos(t) : [e.x + 1.5 + (e.mvP > 0 ? DX[e.mvD] * e.mvP : 0), e.y + 1.5 + (e.mvP > 0 ? DY[e.mvD] * e.mvP : 0)];
 }
 function movePlayer(dt) {
   const vp = driveInput();
@@ -1819,15 +1834,24 @@ function drawUral(c, load, mat, tip, driver) {
   c.fillStyle = '#b8262a'; circle(c, 0, -9.5, 1.6); c.fill();   // red star on the roof
   if (driver) { c.fillStyle = driver.col || '#fff'; c.fillRect(-9, -7, 18, 1.5); }
   c.fillStyle = URAL.tyre; circle(c, 0, -3, 4); c.fill(); c.fillStyle = URAL.steel; circle(c, 0, -3, 1.8); c.fill();   // spare wheel
-  // tipper body, hinged at the rear
-  c.save(); c.translate(0, 34); c.scale(1, 1 - tip * .18); c.translate(0, -34);
+  // tipper body, hinged at the rear: the front lifts toward the camera, so from above it foreshortens and brightens
+  const tp = smooth01(Math.max(0, Math.min(1, tip)));
+  if (tp > 0) { c.fillStyle = `rgba(6,5,2,${.28 * tp})`; c.fillRect(-9 + 7 * tp, 3 + 5 * tp, 26, 34); }   // raised bed throws a longer shadow
+  if (tp > .02) { const rl = 4 + 13 * tp; c.fillStyle = '#5c5f58'; c.fillRect(-2.5, -3, 5, rl); c.fillStyle = '#c9ccc4'; c.fillRect(-1, -3, 1.5, rl); }   // hydraulic ram
+  c.save(); c.translate(0, 35); c.scale(1 + .07 * tp, 1 - tp * .45); c.translate(0, -35);
   c.fillStyle = URAL.oliveD; c.fillRect(-12, 1, 24, 34);
-  c.fillStyle = tip > 0 ? '#677249' : URAL.olive; c.fillRect(-11, 2, 22, 32);
+  const bg = c.createLinearGradient(0, 2, 0, 34); bg.addColorStop(0, shade(URAL.olive, 45 * tp)); bg.addColorStop(1, shade(URAL.olive, -6 * tp)); c.fillStyle = bg; c.fillRect(-11, 2, 22, 32);
   c.fillStyle = URAL.oliveD; for (let y = 6; y < 34; y += 6) { c.fillRect(-12, y, 2, 2); c.fillRect(10, y, 2, 2); }
   c.fillStyle = '#2f3423'; c.fillRect(-9, 4, 18, 28);
-  if (load > 0 && mat) heapFill(c, 0, 18, 4 + 8 * Math.sqrt(load), MATCOL[mat] || '#888');
-  c.fillStyle = URAL.oliveL; c.fillRect(-11, 2, 22, 2); c.fillRect(-11, 2, 2, 32);
+  if (load > 0 && mat) heapFill(c, 0, 18 + 13 * tp, (4 + 8 * Math.sqrt(load)) * (1 - .25 * tp), MATCOL[mat] || '#888');   // load slides to the back
+  c.fillStyle = shade(URAL.oliveL, 30 * tp); c.fillRect(-11, 2, 22, 2); c.fillRect(-11, 2, 2, 32);
   c.restore();
+  if (tp > .08) { c.fillStyle = URAL.oliveD; c.fillRect(-11, 35, 22, 1 + 6 * tp); c.fillStyle = URAL.olive; c.fillRect(-10, 36, 20, 5 * tp); }   // tailgate swung open
+  if (tp > .35 && load > 0 && mat) {   // material pouring out of the back
+    const col = MATCOL[mat] || '#888';
+    for (let k = 0; k < 9; k++) { const ph = (time * 2.2 + k / 9) % 1; c.fillStyle = k % 3 ? col : shade(col, -25); c.fillRect(-7 + ((k * 37) % 14), 38 + ph * 16, 3 + (k % 2), 2 + (k % 3)); }
+    heapFill(c, 0, 52, 5 + 4 * tp, col);
+  }
 }
 function drawTruckShape(c, load, mat, tip) {
   c.scale(.74, .74); drawUral(c, load, mat, tip || 0, null);
@@ -2371,8 +2395,10 @@ function render(dt, frac) {
   for (const t of trucks) { const tx = t.tile % W, ty = t.tile / W | 0; if (tx >= x0 - 2 && tx <= x1 + 2 && ty >= y0 - 2 && ty <= y1 + 2) drawTruck(c, t, dt); else t._x = undefined; }
   const bld = vis.filter(e => !BIG.has(e.type)).sort((p, q) => (p.y + fp(p.type, p.dir)[1]) - (q.y + fp(q.type, q.dir)[1]));
   for (const e of bld) {
-    if (e.type === 'inserter') drawInserterBase(c, e); else drawMachine(c, e);
-    if (e.type === 'excavator') drawExcavatorTop(c, e, dt);
+    if (e.type === 'excavator') {
+      drawExcHeaps(c, e);
+      c.save(); excXform(c, e); drawMachine(c, e); drawExcavatorTop(c, e, dt); c.restore();
+    } else if (e.type === 'inserter') drawInserterBase(c, e); else drawMachine(c, e);
     if (e.type === 'pad' && e.rocket) drawRocketStanding(c, e);
     if ((working(e) || (e.type === 'powerplant' && e.gen > 0) || (e.type === 'pot' && e.T > 600 && !e.frozen)) && DEFS[e.type].stacks) spawnStacks(e);
   }

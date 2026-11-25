@@ -689,7 +689,7 @@ function pathLen(prev, i) { let n = 0; while (prev[i] >= 0) { i = prev[i]; n++; 
 
 function srcMat(s) {
   if (s.dead) return null;
-  if (s.type === 'excavator') return s.mat;
+  if (s.type === 'excavator') return s.mat;   // stockpile first, else the face
   if (s.type === 'bin') return s.stock >= 10 ? s.mat : null;
   if (s.type === 'depot') return BULK.has(s.sel) && s.stock >= 10 ? s.sel : null;
   return null;
@@ -913,7 +913,7 @@ function exitVehicle(pid) {
       delete t.mx; delete t.my; delete t.hx; delete t.hy; delete t.v;
     } else t.status = 'Parked off-road (drive it back onto a road)';
   }
-  const e = excOf(pid); if (e) { e.drv = 0; e.dmv = -1; e.crawl = 0; }
+  const e = excOf(pid); if (e) { e.drv = 0; e.th = 0; e.st = 0; if (e.status === 'Blocked') e.status = 'Idle'; }
 }
 function nearRect(x, y, e, r) {
   const [fw, fh] = fp(e.type, e.dir), nx = Math.max(e.x, Math.min(e.x + fw, x)), ny = Math.max(e.y, Math.min(e.y + fh, y));
@@ -967,6 +967,16 @@ function updManual(t) {
   t.tip = t.tipping ? Math.min(1, (t.tip || 0) + .05) : Math.max(0, (t.tip || 0) - .04);
   if (!t.act && !t.tipping && t.drv) t.status = t.load > 0 ? `Hand-driven · ${Math.round(t.load)} t ${ITEMS[t.mat].n}` : 'Hand-driven · empty';
 }
+function excCanMove(e, d) {
+  const [fw, fh] = fp(e.type, e.dir), nx = e.x + DX[d], ny = e.y + DY[d];
+  for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) {
+    const cx = nx + i, cy = ny + j;
+    if (cx < 0 || cy < 0 || cx >= W || cy >= H || water[cx + cy * W] || creep[cx + cy * W]) return false;
+    const o = cells[cx + cy * W]; if (o && o !== e) return false;
+    if (trucks.some(t => t.tile === cx + cy * W)) return false;
+  }
+  return true;
+}
 function moveExcavator(e, d) {
   const [fw, fh] = fp(e.type, e.dir), nx = e.x + DX[d], ny = e.y + DY[d];
   for (let j = 0; j < fh; j++) for (let i = 0; i < fw; i++) cells[e.x + i + (e.y + j) * W] = null;
@@ -994,30 +1004,61 @@ function pickDig(e) {
   }
   return best;
 }
+const EXC_PILE_CAP = 150;   // t of loose ore it will cast onto a stockpile beside itself while no truck is at the bay
 function updExcavator(e) {
-  if (e.drv && e.dmv >= 0) {
-    e.crawl = (e.crawl || 0) + EXC_CRAWL; e.anim++; burnDiesel(DIESEL_EXC * DT * 1.5);
-    e.status = 'Crawling (hand-driven)'; e.target = -1;
-    if (e.crawl >= 1) { e.crawl = 0; if (!moveExcavator(e, e.dmv)) e.status = 'Blocked'; }
+  // hand-driven: tracked like a tank. W/S crawl forward/back a tile, A/D pivot 90 degrees; each move is finished once started.
+  if (e.drv && !e.mvP && !e.tnP) {
+    if (e.th) { const d = e.th > 0 ? e.dir : (e.dir + 2) % 4; if (excCanMove(e, d)) { e.mvD = d; e.mvP = 1e-6; } else e.status = 'Blocked'; }
+    else if (e.st) { e.tnD = e.st > 0 ? 1 : -1; e.tnP = 1e-6; }
+  }
+  if (e.mvP > 0) {
+    e.mvP += EXC_CRAWL; e.anim++; e.target = -1; burnDiesel(DIESEL_EXC * DT * 1.5); e.status = 'Crawling';
+    if (e.mvP >= 1) { e.mvP = 0; if (!moveExcavator(e, e.mvD)) e.status = 'Blocked'; }
     return;
   }
+  if (e.tnP > 0) {
+    e.tnP += 1 / 75; e.anim++; e.target = -1; burnDiesel(DIESEL_EXC * DT); e.status = 'Pivoting';
+    if (e.tnP >= 1) { e.tnP = 0; e.dir = (e.dir + e.tnD + 4) % 4; computePorts(e); e.dig = -1; }
+    return;
+  }
+  if (e.drv && e.status === 'Blocked') return;
   if (e.pref >= 0 && e.pref !== e.dig && isOre(e.pref) && !cells[e.pref] && excTiles(e.x, e.y).includes(e.pref)) e.dig = e.pref;
   if (e.dig < 0 || !isOre(e.dig) || cells[e.dig]) e.dig = pickDig(e);
-  e.mat = e.dig >= 0 ? oreType[e.dig] : null;
-  if (e.dig < 0) { e.status = 'Face exhausted — relocate'; return; }
+  const face = e.dig >= 0 ? oreType[e.dig] : null, pile = e.pile || 0;
+  e.mat = pile >= 1 ? e.pileMat : face;   // what the next truck will get
   const bay = bays(e)[0];
   const bx = e.x + 1.5 + DX[e.dir] * 2, by = e.y + 1.5 + DY[e.dir] * 2;
   const tr = trucks.find(t => t.man ? Math.abs(t.v) < .01 && (t.mx - bx) * (t.mx - bx) + (t.my - by) * (t.my - by) < 1.44 && t.load < TRUCK_CAP && !t.full
     : bay !== undefined && t.tile === bay && t.next < 0 && t.state === 'loading' && t.job && t.job.src === e);
+  // a truck at the bay: rehandle the stockpile first (loose material loads faster)
+  if (tr && pile >= 1) {
+    if (tr.load > 0 && tr.mat !== e.pileMat) { if (!tr.man) tr.full = true; e.status = 'Truck carries a different ore'; return; }
+    tr.mat = e.pileMat; e.target = -2; e.anim++; e.status = 'Loading truck from stockpile'; burnDiesel(DIESEL_EXC * DT);
+    const mv = Math.min(EXC_RATE * 1.5 * DT, e.pile, TRUCK_CAP - tr.load);
+    e.pile -= mv; tr.load += mv; if (e.pile < 1e-6) { e.pile = 0; e.pileMat = null; }
+    return;
+  }
+  if (e.dig < 0) { e.status = pile >= 1 ? 'Face exhausted — stockpile waiting' : 'Face exhausted — relocate'; e.target = -1; return; }
   if (ob[e.dig] > 0) {
-    ob[e.dig] -= EXC_RATE * 1.5 * DT; e.target = e.dig; e.anim++; burnDiesel(DIESEL_EXC * DT);
+    const mv = EXC_RATE * 1.5 * DT;
+    ob[e.dig] -= mv; e.spoil = (e.spoil || 0) + mv; e.target = e.dig; e.anim++; burnDiesel(DIESEL_EXC * DT);
     e.status = 'Stripping overburden';
     if (ob[e.dig] <= 0) { ob[e.dig] = 0; hooks.onStrip(e.dig); }
     return;
   }
-  if (!tr) { e.status = bay === undefined ? 'No road at bay — park a hand-driven truck there' : 'Waiting for truck'; e.target = -1; return; }
-  if (tr.man && tr.load > 0 && tr.mat !== oreType[e.dig]) { e.status = 'Truck carries a different ore'; return; }
-  const m = oreType[e.dig];
+  const m = face;
+  if (!tr) {   // no truck: dig onto the stockpile
+    if (pile >= EXC_PILE_CAP - 1e-6) { e.status = bay === undefined ? 'Stockpile full — no road at bay' : 'Stockpile full — waiting for truck'; e.target = -1; return; }
+    if (pile >= 1 && e.pileMat !== m) { e.status = 'Stockpile holds a different ore'; e.target = -1; return; }
+    e.target = e.dig; e.anim++; e.status = 'Digging to stockpile'; burnDiesel(DIESEL_EXC * DT);
+    e.acc += EXC_RATE * DT;
+    while (e.acc >= 1 && (e.pile || 0) < EXC_PILE_CAP) {
+      e.acc -= 1; e.pile = (e.pile || 0) + 1; e.pileMat = m; madeAdd(m);
+      if (--oreAmt[e.dig] <= 0) { oreType[e.dig] = null; hooks.onDeplete(e.dig); e.dig = -1; break; }
+    }
+    return;
+  }
+  if (tr.man && tr.load > 0 && tr.mat !== m) { e.status = 'Truck carries a different ore'; return; }
   if (tr.load > 0 && tr.mat !== m) { tr.full = true; e.status = 'Different ore in face'; return; }
   tr.mat = m; e.target = e.dig; e.anim++; e.status = 'Loading truck';
   burnDiesel(DIESEL_EXC * DT);
@@ -1415,14 +1456,14 @@ function applyCmd(pid, c) {
     case 'launch': { const e = get(x, y); const tx = int(c.tx), ty = int(c.ty); if (e && e.type === 'pad' && tx >= 0 && ty >= 0 && tx < W && ty < H) launch(e, tx, ty); break; }
     case 'enter': {
       if (c.tr !== undefined) enterTruck(pid, trucks.find(t => t.id === (c.tr | 0)));
-      else { const e = get(c.ex | 0, c.ey | 0); if (e && e.type === 'excavator' && !e.drv && !truckOf(pid) && !excOf(pid)) { e.drv = pid; e.dmv = -1; e.crawl = 0; } }
+      else { const e = get(c.ex | 0, c.ey | 0); if (e && e.type === 'excavator' && !e.drv && !truckOf(pid) && !excOf(pid)) { e.drv = pid; e.th = 0; e.st = 0; } }
       break;
     }
     case 'exit': exitVehicle(pid); break;
     case 'drive': {
       const t = truckOf(pid);
       if (t) { t.th = Math.max(-1, Math.min(1, c.th | 0)); t.st = Math.max(-1, Math.min(1, c.st | 0)); }
-      const e = excOf(pid); if (e) { const d = c.d | 0; e.dmv = d >= 0 && d < 4 ? d : -1; if (e.dmv < 0) e.crawl = 0; }
+      const e = excOf(pid); if (e) { e.th = Math.max(-1, Math.min(1, c.th | 0)); e.st = Math.max(-1, Math.min(1, c.st | 0)); }
       break;
     }
     case 'act': { const t = truckOf(pid); if (t) t.act = !t.act; break; }
@@ -1499,6 +1540,8 @@ function checksum() {
     if (e.a !== undefined) mix(e.a);
     if (e.T !== undefined) { mix(e.T); mix(e.al); mix(e.metal); }
     if (e.stock !== undefined) mix(e.stock);
+    if (e.pile) mix(e.pile);
+    if (e.mvP || e.tnP) { mix(e.mvP || 0); mix(e.tnP || 0); }
     if (e.inb) for (const k in e.inb) mix(e.inb[k]);
     if (e.fin) for (const k in e.fin) mix(e.fin[k]);
     if (e.net) mix(e.net.amt);
@@ -1518,7 +1561,7 @@ const Sim = {
   T, W, H, DX, DY, DIRN, DT, CHEST_CAP, RESIDUE_CAP, BIN_CAP, TRUCK_CAP, EXC_REACH, ALUMINA_PER_FEED,
   ITEMS, FLUIDS, BULK, ALLOC, IMPORTS, MATS, DEFS, GROUPS, POT_IN, stores, costOf, canAfford, shortOf,
   hash, mulberry, vnoise, fbm, waterField, water, isWater, oreType, oreAmt, ob, oreInit, oreInitAmt, obInit,
-  cells, ents, trucks, stats, power, hooks, creep, hives, flights, bugs, releaseAll, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
+  cells, ents, trucks, stats, power, hooks, creep, hives, flights, bugs, releaseAll, EXC_PILE_CAP, BUG_HP, TURRET_R, SENTRY_R, SHOOT_R, RAID_START, entHpMax, BLAST_R, PAD_RP1, PAD_LOX, NOHANDLE, isOre, padReady,
   get, fp, l2w, makeEnt, canPlace, placeError, place, removeEnt, beltPoint, handPos, isPipe, isJunction, bays, excTiles,
   step, applyCmd, serialize, load, checksum, newWorld, SPAWN, SAFE_R, get seed() { return SEED; }, get patches() { return patchList; },
   get tick() { return tick; }, get satP() { return satP; }, get satO() { return satO; }, get nets() { return nets; },
